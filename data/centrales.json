@@ -44,7 +44,7 @@
     "cota_inicial_mwh": 35000,
     "cota_maxima_mwh": 70000,
     "ruta_costo_variable": "data/datos_centrales/hidro_centro_costo_variable.csv",
-    "ruta_gen_max_gestionable": "data/datos_centrales/hidro_centro_max_gen.csv",
+    "ruta_gen_max_gestionable": "data/datos_centrales/hidro_centro_gen_max.csv",
     "rutas_caudales_afluentes": {
       "seca_p10": "data/datos_centrales/hidro_centro_caudal_p10.csv",
       "media": "data/datos_centrales/hidro_centro_caudal_media.csv",
@@ -60,7 +60,7 @@
     "cota_inicial_mwh": 35000,
     "cota_maxima_mwh": 120000,
     "ruta_costo_variable": "data/datos_centrales/hidro_sur_costo_variable.csv",
-    "ruta_gen_max_gestionable": "data/datos_centrales/hidro_sur_max_gen.csv",
+    "ruta_gen_max_gestionable": "data/datos_centrales/hidro_sur_gen_max.csv",
     "rutas_caudales_afluentes": {
       "seca_p10": "data/datos_centrales/hidro_sur_caudal_p10.csv",
       "media": "data/datos_centrales/hidro_sur_caudal_media.csv",
@@ -75,6 +75,6 @@
     "capacidad_nominal_mw": 100,
     "minimo_tecnico_mw": 0,
     "ruta_costo_variable": "data/datos_centrales/diesel_sur_costo_variable.csv",
-    "ruta_gen_max_gestionable": "data/datos_centrales/diesel_sur_max_gen.csv"
+    "ruta_gen_max_gestionable": "data/datos_centrales/diesel_sur_gen_max.csv"
   }
 ]
