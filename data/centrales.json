@@ -66,5 +66,15 @@
       "media": "data/datos_centrales/hidro_sur_caudal_media.csv",
       "humeda_p90": "data/datos_centrales/hidro_sur_caudal_p90.csv"
     }
+  },
+  {
+    "id_central": "DIESEL-SUR-03",
+    "nombre": "Central Diesel Sur",
+    "ubicacion_barra": 3,
+    "tecnologia": "diesel",
+    "capacidad_nominal_mw": 100,
+    "minimo_tecnico_mw": 0,
+    "ruta_costo_variable": "data/datos_centrales/diesel_sur_costo_variable.csv",
+    "ruta_gen_max_gestionable": "data/datos_centrales/diesel_sur_max_gen.csv"
   }
 ]
