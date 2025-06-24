@@ -1,0 +1,14 @@
+[
+  {
+    "id_linea": "1-2",
+    "punto_1": 1,
+    "punto_2": 2,
+    "capacidad_mw": 300
+  },
+  {
+    "id_linea": "2-3",
+    "punto_1": 2,
+    "punto_2": 3,
+    "capacidad_mw": 500
+  }
+]
