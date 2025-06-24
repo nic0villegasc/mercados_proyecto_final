@@ -43,6 +43,22 @@
     "capacidad_nominal_mw": 20,
     "cota_inicial_mwh": 35000,
     "cota_maxima_mwh": 70000,
+    "ruta_costo_variable": "data/datos_centrales/hidro_centro_costo_variable.csv",
+    "ruta_gen_max_gestionable": "data/datos_centrales/hidro_centro_max_gen.csv",
+    "rutas_caudales_afluentes": {
+      "seca_p10": "data/datos_centrales/hidro_centro_caudal_p10.csv",
+      "media": "data/datos_centrales/hidro_centro_caudal_media.csv",
+      "humeda_p90": "data/datos_centrales/hidro_centro_caudal_p90.csv"
+    }
+  },
+  {
+    "id_central": "HIDRO-SUR-03",
+    "nombre": "Central Hidroeléctrica Sur",
+    "ubicacion_barra": 3,
+    "tecnologia": "hidroelectrica_embalse",
+    "capacidad_nominal_mw": 100,
+    "cota_inicial_mwh": 35000,
+    "cota_maxima_mwh": 120000,
     "ruta_costo_variable": "data/datos_centrales/hidro_sur_costo_variable.csv",
     "ruta_gen_max_gestionable": "data/datos_centrales/hidro_sur_max_gen.csv",
     "rutas_caudales_afluentes": {
