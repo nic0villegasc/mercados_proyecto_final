@@ -1,0 +1,53 @@
+[
+  {
+    "id_central": "SOLAR-NORTE-01",
+    "nombre": "Central Solar Norte",
+    "ubicacion_barra": 1,
+    "tecnologia": "solar_fotovoltaica",
+    "capacidad_nominal_mw": 50,
+    "ruta_generacion_fija": "data/datos_centrales/solar_norte_generacion.csv"
+  },
+  {
+    "id_central": "SOLAR-CENTRO-02",
+    "nombre": "Central Solar NorCentro",
+    "ubicacion_barra": 2,
+    "tecnologia": "solar_fotovoltaica",
+    "capacidad_nominal_mw": 25,
+    "ruta_generacion_fija": "data/datos_centrales/solar_centro_generacion.csv"
+  },
+  {
+    "id_central": "TERMICA-NORTE-01",
+    "nombre": "Central Térmica Norte",
+    "ubicacion_barra": 1,
+    "tecnologia": "termica_gas",
+    "capacidad_nominal_mw":140,
+    "minimo_tecnico_mw": 80,
+    "ruta_costo_variable": "data/centrales_timeseries/termica_norte_costo_variable.csv",
+    "ruta_gen_max_gestionable": "data/centrales_timeseries/termica_norte_gen_max.csv"
+  },
+  {
+    "id_central": "TERMICA-CENTRO-02",
+    "nombre": "Central Térmica Centro",
+    "ubicacion_barra": 2,
+    "tecnologia": "termica_gas",
+    "capacidad_nominal_mw":50,
+    "minimo_tecnico_mw": 30,
+    "ruta_costo_variable": "data/centrales_timeseries/termica_centro_costo_variable.csv",
+    "ruta_gen_max_gestionable": "data/centrales_timeseries/termica_centro_gen_max.csv"
+  },
+  {
+    "id_central": "HIDRO-SUR-01",
+    "nombre": "Central Hidroeléctrica Sur",
+    "ubicacion_barra": 3,
+    "tecnologia": "hidroelectrica_embalse",
+    "capacidad_nominal_mw": 150,
+    "cota_inicial_m3": 12000000,
+    "cota_maxima_m3": 50000000,
+    "ruta_gen_max_gestionable": "data/centrales_timeseries/hidro_sur_max_gen.csv",
+    "rutas_caudales_afluentes": {
+      "seca_p10": "data/centrales_timeseries/hidro_sur_inflows_p10.csv",
+      "media": "data/centrales_timeseries/hidro_sur_inflows_media.csv",
+      "humeda_p90": "data/centrales_timeseries/hidro_sur_inflows_p90.csv"
+    }
+  }
+]
