@@ -22,8 +22,8 @@
     "tecnologia": "termica_gas",
     "capacidad_nominal_mw":140,
     "minimo_tecnico_mw": 80,
-    "ruta_costo_variable": "data/centrales_timeseries/termica_norte_costo_variable.csv",
-    "ruta_gen_max_gestionable": "data/centrales_timeseries/termica_norte_gen_max.csv"
+    "ruta_costo_variable": "data/datos_centrales/termica_norte_costo_variable.csv",
+    "ruta_gen_max_gestionable": "data/datos_centrales/termica_norte_gen_max.csv"
   },
   {
     "id_central": "TERMICA-CENTRO-02",
@@ -32,22 +32,23 @@
     "tecnologia": "termica_gas",
     "capacidad_nominal_mw":50,
     "minimo_tecnico_mw": 30,
-    "ruta_costo_variable": "data/centrales_timeseries/termica_centro_costo_variable.csv",
-    "ruta_gen_max_gestionable": "data/centrales_timeseries/termica_centro_gen_max.csv"
+    "ruta_costo_variable": "data/datos_centrales/termica_centro_costo_variable.csv",
+    "ruta_gen_max_gestionable": "data/datos_centrales/termica_centro_gen_max.csv"
   },
   {
-    "id_central": "HIDRO-SUR-01",
-    "nombre": "Central Hidroeléctrica Sur",
-    "ubicacion_barra": 3,
+    "id_central": "HIDRO-CENTRO-02",
+    "nombre": "Central Hidroeléctrica Centro",
+    "ubicacion_barra": 2,
     "tecnologia": "hidroelectrica_embalse",
-    "capacidad_nominal_mw": 150,
-    "cota_inicial_m3": 12000000,
-    "cota_maxima_m3": 50000000,
-    "ruta_gen_max_gestionable": "data/centrales_timeseries/hidro_sur_max_gen.csv",
+    "capacidad_nominal_mw": 20,
+    "cota_inicial_mwh": 35000,
+    "cota_maxima_mwh": 70000,
+    "ruta_costo_variable": "data/datos_centrales/hidro_sur_costo_variable.csv",
+    "ruta_gen_max_gestionable": "data/datos_centrales/hidro_sur_max_gen.csv",
     "rutas_caudales_afluentes": {
-      "seca_p10": "data/centrales_timeseries/hidro_sur_inflows_p10.csv",
-      "media": "data/centrales_timeseries/hidro_sur_inflows_media.csv",
-      "humeda_p90": "data/centrales_timeseries/hidro_sur_inflows_p90.csv"
+      "seca_p10": "data/datos_centrales/hidro_sur_caudal_p10.csv",
+      "media": "data/datos_centrales/hidro_sur_caudal_media.csv",
+      "humeda_p90": "data/datos_centrales/hidro_sur_caudal_p90.csv"
     }
   }
 ]
