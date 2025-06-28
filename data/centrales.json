@@ -4,7 +4,7 @@
     "nombre": "Central Solar Norte",
     "id_barra": 1,
     "tecnologia": "solar",
-    "capacidad_nominal_mw": 1500,
+    "capacidad_nominal_mw": 50,
     "ruta_generacion_fija": "data/datos_centrales/solar_norte_generacion.csv"
   },
   {
@@ -12,7 +12,7 @@
     "nombre": "Central Solar NorCentro",
     "id_barra": 2,
     "tecnologia": "solar",
-    "capacidad_nominal_mw": 750,
+    "capacidad_nominal_mw": 25,
     "ruta_generacion_fija": "data/datos_centrales/solar_centro_generacion.csv"
   },
   {
@@ -20,7 +20,7 @@
     "nombre": "Central Térmica Norte",
     "id_barra": 1,
     "tecnologia": "termica",
-    "capacidad_nominal_mw":4200,
+    "capacidad_nominal_mw":140,
     "minimo_tecnico_mw": 80,
     "ruta_costo_variable": "data/datos_centrales/termica_norte_costo_variable.csv",
     "ruta_gen_max_gestionable": "data/datos_centrales/termica_norte_gen_max.csv"
@@ -30,7 +30,7 @@
     "nombre": "Central Térmica Centro",
     "id_barra": 2,
     "tecnologia": "termica",
-    "capacidad_nominal_mw":1500,
+    "capacidad_nominal_mw":50,
     "minimo_tecnico_mw": 30,
     "ruta_costo_variable": "data/datos_centrales/termica_centro_costo_variable.csv",
     "ruta_gen_max_gestionable": "data/datos_centrales/termica_centro_gen_max.csv"
@@ -40,7 +40,7 @@
     "nombre": "Central Hidroeléctrica Centro",
     "id_barra": 2,
     "tecnologia": "hidroelectrica",
-    "capacidad_nominal_mw": 600,
+    "capacidad_nominal_mw": 20,
     "cota_inicial_mwh": 35000,
     "cota_maxima_mwh": 70000,
     "ruta_costo_variable": "data/datos_centrales/hidro_centro_costo_variable.csv",
@@ -56,7 +56,7 @@
     "nombre": "Central Hidroeléctrica Sur",
     "id_barra": 3,
     "tecnologia": "hidroelectrica",
-    "capacidad_nominal_mw": 3000,
+    "capacidad_nominal_mw": 100,
     "cota_inicial_mwh": 35000,
     "cota_maxima_mwh": 120000,
     "ruta_costo_variable": "data/datos_centrales/hidro_sur_costo_variable.csv",
@@ -72,7 +72,7 @@
     "nombre": "Central Diesel Sur",
     "id_barra": 3,
     "tecnologia": "diesel",
-    "capacidad_nominal_mw": 3000,
+    "capacidad_nominal_mw": 100,
     "minimo_tecnico_mw": 0,
     "ruta_costo_variable": "data/datos_centrales/diesel_sur_costo_variable.csv",
     "ruta_gen_max_gestionable": "data/datos_centrales/diesel_sur_gen_max.csv"

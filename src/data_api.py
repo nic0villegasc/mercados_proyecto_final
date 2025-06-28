@@ -49,54 +49,44 @@ class ProjectDataAPI:
 
     def _load_demand_data(self):
         """
-        Carga los archivos de demanda y mantiene los IDs
-        numéricos de las barras (1, 2, 3) de forma consistente.
+        CORREGIDO: Carga los perfiles de demanda, interpretando el valor como la energía
+        mensual para ese bloque horario, y lo convierte a una potencia horaria promedio.
         """
         all_demands_profiles = []
-        # Usamos directamente los IDs numéricos de las barras
-        barras_ids = [1, 2, 3] 
-
-        for barra_id in barras_ids:
+        barras_ids = [1, 2, 3]
+        for bid in barras_ids:
             try:
-                demand_path = self.base_path / f'demanda{barra_id}.csv'
-                df_profile = pd.read_csv(demand_path, dtype={'Hora': int})
-                
-                # Asignamos el ID numérico a la columna 'Barra'
-                df_profile['Barra'] = barra_id
-                df_profile['Demanda_MW'] = self._clean_numeric_column(df_profile['Demanda_MW'])
-                all_demands_profiles.append(df_profile)
-            except FileNotFoundError:
-                print(f"Advertencia: No se encontró el archivo de demanda para la barra {barra_id}.")
-                continue
+                df = pd.read_csv(self.base_path / f'demanda{bid}.csv', dtype={'Hora': int})
+                df['Barra'] = bid
+                # Interpretamos la columna como la Energía Total Mensual para ese bloque horario
+                df.rename(columns={'Demanda_MW': 'Energia_Mensual_Bloque_MWh'}, inplace=True)
+                df['Energia_Mensual_Bloque_MWh'] = self._clean_numeric_column(df['Energia_Mensual_Bloque_MWh'])
+                all_demands_profiles.append(df)
+            except FileNotFoundError: print(f"Warning: demanda{bid}.csv not found.")
         
         if not all_demands_profiles:
-            self.demanda = pd.DataFrame()
-            return
+            self.demanda = pd.DataFrame(); return
 
         demand_profiles_df = pd.concat(all_demands_profiles, ignore_index=True)
 
-        # --- El resto de la función para crear el Timestamp no cambia, ---
-        # --- pero ahora propagará los IDs numéricos. ---
+        # --- Construcción de la serie de tiempo completa ---
         BASE_YEAR = 2025
-        HORIZON_YEARS = 10
-        start_date = pd.to_datetime(f'{BASE_YEAR}-01-01 00:00:00')
-        end_date = pd.to_datetime(f'{BASE_YEAR + HORIZON_YEARS - 1}-12-31 23:00:00')
-        time_index_df = pd.DataFrame(pd.date_range(start=start_date, end=end_date, freq='h'), columns=['Timestamp'])
+        start_date = pd.to_datetime(f'{BASE_YEAR}-01-01'); end_date = pd.to_datetime(f'{BASE_YEAR+9}-12-31 23:00:00')
+        scaffold = pd.DataFrame(pd.date_range(start=start_date, end=end_date, freq='h'), columns=['Timestamp']).merge(pd.DataFrame({'Barra': barras_ids}), how='cross')
         
-        # Creamos el scaffold usando los IDs numéricos
-        barras_df = pd.DataFrame({'Barra': barras_ids})
-        scaffold_df = time_index_df.merge(barras_df, how='cross')
+        scaffold['Año'] = scaffold['Timestamp'].dt.year - BASE_YEAR + 1
+        scaffold['Mes'] = scaffold['Timestamp'].dt.month
+        scaffold['Hora'] = scaffold['Timestamp'].dt.hour
         
-        scaffold_df['Año'] = scaffold_df['Timestamp'].dt.year - BASE_YEAR + 1
-        scaffold_df['Mes'] = scaffold_df['Timestamp'].dt.month
-        scaffold_df['Hora'] = scaffold_df['Timestamp'].dt.hour
+        # Añadir el número de días de cada mes para hacer la división
+        scaffold['dias_en_mes'] = scaffold['Timestamp'].dt.days_in_month
         
-        self.demanda = pd.merge(
-            scaffold_df,
-            demand_profiles_df,
-            on=['Año', 'Mes', 'Hora', 'Barra'],
-            how='left'
-        )
+        # Unimos los perfiles con el scaffold completo
+        self.demanda = pd.merge(scaffold, demand_profiles_df, on=['Año', 'Mes', 'Hora', 'Barra'], how='left')
+        
+        # --- CÁLCULO DE LA DEMANDA HORARIA ---
+        # Dividimos la energía mensual del bloque por el número de días para obtener la potencia horaria promedio
+        self.demanda['Demanda_MW'] = self.demanda['Energia_Mensual_Bloque_MWh'] / self.demanda['dias_en_mes']
         
         if self.demanda['Demanda_MW'].isnull().any():
             print("Advertencia: Se rellenaron valores de demanda faltantes.")

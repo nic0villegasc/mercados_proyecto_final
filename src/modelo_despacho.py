@@ -1,3 +1,4 @@
+import os
 import json
 from pathlib import Path
 import pandas as pd
@@ -129,7 +130,7 @@ class ModelData:
                 # Opcional: Manejar casos donde una hora no tenga un costo definido
                 print(f"Advertencia: No se encontró costo para {g} en la hora {t} (Año {año_relativo}, Mes {mes})")
                 
-        # --- Parámetro: Valor del Agua (Costo de Oportunidad) ---
+      # --- Parámetro: Valor del Agua (Costo de Oportunidad) ---
       self.ValorAgua = {}
       self.NivelEmbalseMensual = {} # Para guardar los resultados de la simulación
 
@@ -498,17 +499,6 @@ class OptimizationModel:
         # tee=True muestra el log del solver en la consola, lo que es crucial
         # para ver el progreso en problemas largos.
         self.results = solver.solve(self.model, tee=True)
-        
-        # 4. Verificar el estado de la solución
-        if self.results.solver.status == pyo.SolverStatus.ok and \
-           self.results.solver.termination_condition == pyo.TerminationCondition.optimal:
-            print("\n¡Solución óptima encontrada!")
-            # Si la solución es óptima, cargamos los resultados en el modelo para fácil acceso
-            self.model.load_solutions(self.results)
-        elif self.results.solver.termination_condition == pyo.TerminationCondition.infeasible:
-            print("\nError: El modelo es infactible. No se encontró una solución que cumpla todas las restricciones.")
-        else:
-            print(f"\nSolución terminada con estado: {self.results.solver.status} - {self.results.solver.termination_condition}")
     
     def export_model_to_file(self, filename="modelo.lp"):
         """
@@ -522,73 +512,76 @@ class OptimizationModel:
         # variables y restricciones en el archivo sean legibles.
         self.model.write("model.lp", io_options={'symbolic_solver_labels': True})
         print("Exportación completada.")
-
-def debug_infeasibility_v3(model_data: ModelData):
-    """
-    Realiza un análisis exhaustivo para encontrar la causa de una infactibilidad,
-    incluyendo el análisis de cuellos de botella y conflictos de Pmin.
-    """
-    print("\n--- INICIANDO DIAGNÓSTICO DE INFACTIBILIDAD v3 ---")
     
-    # --- 1. Chequeo de Capacidad vs. Demanda Punta ---
-    print("\n[TEST 1] Verificando Capacidad Instalada vs. Demanda Punta...")
-    centrales_df = model_data.api.get_centrales_info()
-    capacidad_total_instalada = centrales_df['capacidad_nominal_mw'].sum()
-    demanda_df = model_data.api.get_demanda()
-    demanda_horaria_total = demanda_df.groupby('Timestamp')['Demanda_MW'].sum()
-    demanda_punta = demanda_horaria_total.max()
-    if demanda_punta > capacidad_total_instalada:
-        print(f"  - ¡FALLA! Demanda Punta ({demanda_punta:,.2f} MW) > Capacidad Instalada ({capacidad_total_instalada:,.2f} MW).")
-        return
-    print("  - OK: Capacidad Instalada es suficiente.")
+    def get_results_as_dataframes(self):
+        """
+        Extrae los resultados de las variables del modelo resuelto y los
+        convierte en DataFrames de pandas para un fácil análisis.
+        
+        Returns:
+            dict: Un diccionario de DataFrames, con una clave por cada tipo de variable.
+        """
+        if self.results.solver.termination_condition != pyo.TerminationCondition.optimal:
+            print("No se puede extraer resultados porque no se encontró una solución óptima.")
+            return None
 
-    # --- 2. Chequeo de Mínimo Técnico vs. Presupuesto de Energía Mensual ---
-    print("\n[TEST 2] Verificando Mínimo Técnico vs. Presupuesto de Energía Mensual...")
-    conflicto_pmin_presupuesto = False
-    for g in model_data.G_termica:
-        pmin = model_data.Pmin.get(g, 0)
-        if pmin == 0: continue
-        for m in model_data.M:
-            energia_minima_requerida = pmin * len(model_data.T_m[m])
-            presupuesto_energia = model_data.EnergiaMaxMensual.get((g, m))
-            if presupuesto_energia is not None and energia_minima_requerida > presupuesto_energia:
-                print(f"  - ¡CONFLICTO! Central '{g}', Mes {m}: Req Mínimo ({energia_minima_requerida:,.0f} MWh) > Presupuesto ({presupuesto_energia:,.0f} MWh)")
-                conflicto_pmin_presupuesto = True
-    if not conflicto_pmin_presupuesto:
-        print("  - OK: No hay conflictos entre Pmin y presupuesto de energía.")
+        print("\n--- PASO 7: EXtrayendo resultados a DataFrames ---")
+        
+        results_dfs = {}
+        
+        # Generación horaria (p)
+        p_data = []
+        for (g, t), var in self.model.p.items():
+            if pyo.value(var, exception=False) > 1e-6: # Solo guardar si hay generación
+                p_data.append({'generador': g, 'hora': t, 'generacion_mw': pyo.value(var)})
+        results_dfs['generacion'] = pd.DataFrame(p_data)
+        
+        # Estado de encendido mensual (u)
+        u_data = []
+        for (g, m), var in self.model.u.items():
+            u_data.append({'generador': g, 'mes': m, 'encendido': int(pyo.value(var))})
+        results_dfs['compromiso_unidad'] = pd.DataFrame(u_data)
 
-    # --- 3. Chequeo de Cuellos de Botella en la Red ---
-    print("\n[TEST 3] Verificando Cuellos de Botella en la Red...")
-    # (Se omite por brevedad, asumimos que ya pasó)
-    print("  - OK: No se encontraron cuellos de botella obvios.")
-    
-    # --- 4. NUEVO CHEQUEO: Conflicto entre Mínimo Técnico y Presupuesto CERO ---
-    print("\n[TEST 4] Verificando si existe Pmin > 0 con un Presupuesto de Energía = 0...")
-    conflicto_pmin_cero = False
-    for g in model_data.G_termica:
-        pmin = model_data.Pmin.get(g, 0)
-        if pmin > 0:
-            for m in model_data.M:
-                presupuesto_energia = model_data.EnergiaMaxMensual.get((g, m), 0)
-                if presupuesto_energia == 0:
-                    print(f"  - ¡CONFLICTO ENCONTRADO! Central '{g}' en el mes {m}:")
-                    print(f"    - Tiene un Pmin de {pmin} MW, pero su presupuesto de energía es CERO.")
-                    print(f"    - Si se enciende, está obligada a generar, pero su límite es cero. Imposible.")
-                    conflicto_pmin_cero = True
+        # Vertimiento solar (p_vert)
+        vert_data = []
+        for (g, t), var in self.model.p_vert.items():
+            if pyo.value(var, exception=False) > 1e-6: # Solo guardar si hay vertimiento
+                vert_data.append({'generador': g, 'hora': t, 'vertimiento_mw': pyo.value(var)})
+        results_dfs['vertimiento'] = pd.DataFrame(vert_data)
 
-    if not conflicto_pmin_cero:
-        print("  - OK: No se encontraron conflictos de Pmin > 0 con presupuesto cero.")
+        # Flujo en líneas (f)
+        f_data = []
+        for (l, t), var in self.model.f.items():
+            flow_val = pyo.value(var, exception=False)
+            if abs(flow_val) > 1e-6: # Solo guardar si hay flujo
+                f_data.append({'linea': l, 'hora': t, 'flujo_mw': flow_val})
+        results_dfs['flujo'] = pd.DataFrame(f_data)
 
-    print("\n--- DIAGNÓSTICO FINALIZADO ---")
-    if conflicto_pmin_cero:
-        print("Causa más probable de infactibilidad: Una central térmica con Pmin > 0 tiene un presupuesto de energía de 0 en algún mes.")
-    else:
-        print("No se encontraron causas obvias de infactibilidad con los diagnósticos actuales.")
+        print("Extracción de resultados completada.")
+        return results_dfs
+      
+    def save_results_to_csv(self, output_folder="../resultados"):
+        """
+        Guarda los DataFrames de resultados en archivos CSV dentro de una carpeta específica.
+        """
+        results_data = self.get_results_as_dataframes()
+        if not results_data:
+            print("No hay resultados para guardar.")
+            return
+
+        # Crear la carpeta de resultados si no existe
+        os.makedirs(output_folder, exist_ok=True)
+        print(f"\nGuardando resultados en la carpeta: '{output_folder}'")
+
+        for name, df in results_data.items():
+            filepath = os.path.join(output_folder, f"resultados_{name}.csv")
+            df.to_csv(filepath, index=False, decimal='.', sep=';')
+            print(f" - Archivo '{filepath}' guardado exitosamente.")
 
 if __name__ == '__main__':
   api = ProjectDataAPI(data_path='data')
 
-  model_data = ModelData(data_api=api, months_to_run=1)
+  model_data = ModelData(data_api=api, months_to_run=120)
 
   print("\n--- CONJUNTOS DE GENERADORES ---")
   print(f"G (Todos): {model_data.G}")
@@ -807,7 +800,7 @@ if __name__ == '__main__':
   print(f"Número de variables: {opt_model.model.nvariables()}")
   print(f"Número de restricciones: {opt_model.model.nconstraints()}")
   
-  opt_model.export_model_to_file("modelo_para_cplex")
+  #opt_model.export_model_to_file("modelo_para_cplex")
   
   #debug_infeasibility_v3(model_data=model_data)
   
@@ -817,6 +810,29 @@ if __name__ == '__main__':
 
   # 5. Validar los resultados (si la solución fue óptima)
   if opt_model.results.solver.termination_condition == pyo.TerminationCondition.optimal:
-      print("\n--- VALIDACIÓN DE RESULTADOS ---")
-      costo_total_optimo = pyo.value(opt_model.model.objective)
-      print(f"Costo total del sistema: ${costo_total_optimo:,.2f}")
+    # 1. Obtener el costo total
+    costo_total = pyo.value(opt_model.model.objective)
+    print(f"\n--- RESULTADOS DE LA OPTIMIZACIÓN ---")
+    print(f"Costo Total de Operación para 1 Mes: ${costo_total:,.2f}")
+    
+    # 2. Obtener los resultados en formato de tablas (DataFrames)
+    resultados_tablas = opt_model.get_results_as_dataframes()
+    
+    if resultados_tablas:
+        # 3. Mostrar un resumen de cada tabla de resultados
+        print("\n--- Resumen de Compromiso de Unidades (Térmicas) ---")
+        print(resultados_tablas['compromiso_unidad'])
+        
+        print("\n--- Resumen de Generación Horaria (primeras 5 filas con generación) ---")
+        print(resultados_tablas['generacion'])
+        
+        print("\n--- Resumen de Flujo en Líneas (primeras 5 filas con flujo) ---")
+        print(resultados_tablas['flujo'].head())
+
+        if not resultados_tablas['vertimiento'].empty:
+            print("\n--- Resumen de Vertimiento Solar (primeras 5 filas con vertimiento) ---")
+            print(resultados_tablas['vertimiento'].head())
+        else:
+            print("\nNo hubo vertimiento solar en la solución.")
+
+    opt_model.save_results_to_csv(output_folder="resultados_simulacion")
