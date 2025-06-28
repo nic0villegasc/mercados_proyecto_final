@@ -48,20 +48,60 @@ class ProjectDataAPI:
         return series.astype(str).str.strip().str.replace(',', '').astype(float)
 
     def _load_demand_data(self):
-        """Carga y combina los 3 archivos de demanda en un único DataFrame."""
-        all_demands = []
-        for i in range(1, 4):
-            try:
-                demand_path = self.base_path / f'demanda{i}.csv'
-                df = pd.read_csv(demand_path)
-                df['Barra'] = i
-                # Limpieza de la columna de demanda
-                df['Demanda_MW'] = self._clean_numeric_column(df['Demanda_MW'])
-                all_demands.append(df)
-            except FileNotFoundError:
-                print(f"Advertencia: No se encontró el archivo de demanda para la barra {i}.")
+        """
+        Carga los archivos de demanda y mantiene los IDs
+        numéricos de las barras (1, 2, 3) de forma consistente.
+        """
+        all_demands_profiles = []
+        # Usamos directamente los IDs numéricos de las barras
+        barras_ids = [1, 2, 3] 
 
-        self.demanda = pd.concat(all_demands, ignore_index=True)
+        for barra_id in barras_ids:
+            try:
+                demand_path = self.base_path / f'demanda{barra_id}.csv'
+                df_profile = pd.read_csv(demand_path, dtype={'Hora': int})
+                
+                # Asignamos el ID numérico a la columna 'Barra'
+                df_profile['Barra'] = barra_id
+                df_profile['Demanda_MW'] = self._clean_numeric_column(df_profile['Demanda_MW'])
+                all_demands_profiles.append(df_profile)
+            except FileNotFoundError:
+                print(f"Advertencia: No se encontró el archivo de demanda para la barra {barra_id}.")
+                continue
+        
+        if not all_demands_profiles:
+            self.demanda = pd.DataFrame()
+            return
+
+        demand_profiles_df = pd.concat(all_demands_profiles, ignore_index=True)
+
+        # --- El resto de la función para crear el Timestamp no cambia, ---
+        # --- pero ahora propagará los IDs numéricos. ---
+        BASE_YEAR = 2025
+        HORIZON_YEARS = 10
+        start_date = pd.to_datetime(f'{BASE_YEAR}-01-01 00:00:00')
+        end_date = pd.to_datetime(f'{BASE_YEAR + HORIZON_YEARS - 1}-12-31 23:00:00')
+        time_index_df = pd.DataFrame(pd.date_range(start=start_date, end=end_date, freq='h'), columns=['Timestamp'])
+        
+        # Creamos el scaffold usando los IDs numéricos
+        barras_df = pd.DataFrame({'Barra': barras_ids})
+        scaffold_df = time_index_df.merge(barras_df, how='cross')
+        
+        scaffold_df['Año'] = scaffold_df['Timestamp'].dt.year - BASE_YEAR + 1
+        scaffold_df['Mes'] = scaffold_df['Timestamp'].dt.month
+        scaffold_df['Hora'] = scaffold_df['Timestamp'].dt.hour
+        
+        self.demanda = pd.merge(
+            scaffold_df,
+            demand_profiles_df,
+            on=['Año', 'Mes', 'Hora', 'Barra'],
+            how='left'
+        )
+        
+        if self.demanda['Demanda_MW'].isnull().any():
+            print("Advertencia: Se rellenaron valores de demanda faltantes.")
+            self.demanda['Demanda_MW'] = self.demanda['Demanda_MW'].ffill().ffill()
+        
 
     def _load_centrales_timeseries_data(self):
         """
@@ -165,7 +205,6 @@ class ProjectDataAPI:
             raise ValueError(f"Hidrología '{hidrologia}' no válida. Opciones: {list(caudales_dict.keys())}")
         return caudales_dict[hidrologia]
 
-
 # --- Ejemplo de Uso ---
 if __name__ == '__main__':
     api = ProjectDataAPI()
@@ -180,13 +219,13 @@ if __name__ == '__main__':
     print(info_lineas)
 
     # 3. Obtener series de tiempo
-    print("\n--- Demanda de la Barra 2 (primeras 5 filas) ---")
-    demanda_barra_2 = api.get_demanda(barra=2)
+    print("\n--- Demanda de las Barras (primeras 5 filas) ---")
+    demanda_barra_2 = api.get_demanda()
     print(demanda_barra_2.head())
 
     print("\n--- Costo Variable de la Térmica del Norte (primeras 5 filas) ---")
-    costo_termica_norte = api.get_time_series_data('TERMICA-NORTE-01', 'costo_variable')
-    print(costo_termica_norte.head())
+    costo_termica_norte = api.get_time_series_data('TERMICA-CENTRO-02', 'gen_max_gestionable')
+    print(costo_termica_norte)
 
     print("\n--- Caudal de la Hidro del Sur en hidrología seca (primeras 5 filas) ---")
     caudal_hidro_sur_seca = api.get_caudal('HIDRO-SUR-03', hidrologia='seca_p10')

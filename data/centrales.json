@@ -2,25 +2,25 @@
   {
     "id_central": "SOLAR-NORTE-01",
     "nombre": "Central Solar Norte",
-    "ubicacion_barra": 1,
-    "tecnologia": "solar_fotovoltaica",
-    "capacidad_nominal_mw": 50,
+    "id_barra": 1,
+    "tecnologia": "solar",
+    "capacidad_nominal_mw": 1500,
     "ruta_generacion_fija": "data/datos_centrales/solar_norte_generacion.csv"
   },
   {
     "id_central": "SOLAR-CENTRO-02",
     "nombre": "Central Solar NorCentro",
-    "ubicacion_barra": 2,
-    "tecnologia": "solar_fotovoltaica",
-    "capacidad_nominal_mw": 25,
+    "id_barra": 2,
+    "tecnologia": "solar",
+    "capacidad_nominal_mw": 750,
     "ruta_generacion_fija": "data/datos_centrales/solar_centro_generacion.csv"
   },
   {
     "id_central": "TERMICA-NORTE-01",
     "nombre": "Central Térmica Norte",
-    "ubicacion_barra": 1,
-    "tecnologia": "termica_gas",
-    "capacidad_nominal_mw":140,
+    "id_barra": 1,
+    "tecnologia": "termica",
+    "capacidad_nominal_mw":4200,
     "minimo_tecnico_mw": 80,
     "ruta_costo_variable": "data/datos_centrales/termica_norte_costo_variable.csv",
     "ruta_gen_max_gestionable": "data/datos_centrales/termica_norte_gen_max.csv"
@@ -28,9 +28,9 @@
   {
     "id_central": "TERMICA-CENTRO-02",
     "nombre": "Central Térmica Centro",
-    "ubicacion_barra": 2,
-    "tecnologia": "termica_gas",
-    "capacidad_nominal_mw":50,
+    "id_barra": 2,
+    "tecnologia": "termica",
+    "capacidad_nominal_mw":1500,
     "minimo_tecnico_mw": 30,
     "ruta_costo_variable": "data/datos_centrales/termica_centro_costo_variable.csv",
     "ruta_gen_max_gestionable": "data/datos_centrales/termica_centro_gen_max.csv"
@@ -38,9 +38,9 @@
   {
     "id_central": "HIDRO-CENTRO-02",
     "nombre": "Central Hidroeléctrica Centro",
-    "ubicacion_barra": 2,
-    "tecnologia": "hidroelectrica_embalse",
-    "capacidad_nominal_mw": 20,
+    "id_barra": 2,
+    "tecnologia": "hidroelectrica",
+    "capacidad_nominal_mw": 600,
     "cota_inicial_mwh": 35000,
     "cota_maxima_mwh": 70000,
     "ruta_costo_variable": "data/datos_centrales/hidro_centro_costo_variable.csv",
@@ -54,9 +54,9 @@
   {
     "id_central": "HIDRO-SUR-03",
     "nombre": "Central Hidroeléctrica Sur",
-    "ubicacion_barra": 3,
-    "tecnologia": "hidroelectrica_embalse",
-    "capacidad_nominal_mw": 100,
+    "id_barra": 3,
+    "tecnologia": "hidroelectrica",
+    "capacidad_nominal_mw": 3000,
     "cota_inicial_mwh": 35000,
     "cota_maxima_mwh": 120000,
     "ruta_costo_variable": "data/datos_centrales/hidro_sur_costo_variable.csv",
@@ -70,9 +70,9 @@
   {
     "id_central": "DIESEL-SUR-03",
     "nombre": "Central Diesel Sur",
-    "ubicacion_barra": 3,
+    "id_barra": 3,
     "tecnologia": "diesel",
-    "capacidad_nominal_mw": 100,
+    "capacidad_nominal_mw": 3000,
     "minimo_tecnico_mw": 0,
     "ruta_costo_variable": "data/datos_centrales/diesel_sur_costo_variable.csv",
     "ruta_gen_max_gestionable": "data/datos_centrales/diesel_sur_gen_max.csv"
