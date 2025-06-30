@@ -338,6 +338,8 @@ class OptimizationModel:
         self.data = model_data
         self.model = pyo.ConcreteModel()
         
+        self.model.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT_EXPORT)
+        
         # Llamamos al método que construye las variables
         self._build_variables()
         
@@ -512,6 +514,40 @@ class OptimizationModel:
         # tee=True muestra el log del solver en la consola, lo que es crucial
         # para ver el progreso en problemas largos.
         self.results = solver.solve(self.model, tee=True)
+        
+    def solve_and_get_duals(self, solver_name='cplex'):
+        """
+        Resuelve el modelo en dos etapas para obtener los costos marginales (duales).
+        """
+        solver = pyo.SolverFactory(solver_name)
+        
+        # --- ETAPA 1: Resolver el MILP para obtener las decisiones de encendido (u) ---
+        print(f"\n--- ETAPA 1: Resolviendo el MILP con {solver_name.upper()} ---")
+        milp_results = solver.solve(self.model, tee=True)
+        
+        if milp_results.solver.termination_condition != pyo.TerminationCondition.optimal:
+            print(f"La Etapa 1 (MILP) no encontró una solución óptima. Estado: {milp_results.solver.termination_condition}")
+            self.results = milp_results
+            return
+            
+        print("\nEtapa 1 completada. Decisiones de encendido encontradas.")
+        
+        # --- ETAPA 2: Fijar las variables binarias y resolver el LP para obtener los duales ---
+        print("\n--- ETAPA 2: Fijando variables enteras y resolviendo el LP ---")
+        
+        # Fijamos las variables 'u' a su valor óptimo
+        for g in self.data.G_termica:
+            for m in self.data.M:
+                self.model.u[g,m].fix(pyo.value(self.model.u[g,m]))
+        
+        # Resolvemos el problema de nuevo, que ahora es un LP
+        self.results = solver.solve(self.model, tee=True)
+
+        # Después de resolver el LP, los duales estarán disponibles
+        if self.results.solver.status == pyo.SolverStatus.ok and self.results.solver.termination_condition == pyo.TerminationCondition.optimal:
+            print("\n¡Solución óptima del LP encontrada! Los costos marginales están disponibles.")
+        else:
+            print(f"La Etapa 2 (LP) no encontró una solución óptima. Estado: {self.results.solver.termination_condition}")
     
     def export_model_to_file(self, filename="modelo.lp"):
         """
@@ -526,10 +562,61 @@ class OptimizationModel:
         self.model.write("model.lp", io_options={'symbolic_solver_labels': True})
         print("Exportación completada.")
     
+    def _add_marginal_generator_info(self, results_dfs):
+        """
+        Enriquece el DataFrame de costos marginales con la central que fija el precio.
+        Utiliza copias explícitas de los DataFrames para evitar efectos secundarios.
+        """
+        print("Identificando la central marginal para cada paso horario...")
+        
+        # --- LA SOLUCIÓN CLAVE ---
+        # Usamos .copy() para crear copias independientes y evitar modificar los DFs originales.
+        cml_df = results_dfs['costo_marginal'].copy()
+        gen_df = results_dfs['generacion'].copy()
+        # -------------------------
+
+        # Crear una tabla de costos de cada generador en cada hora
+        costos_data = []
+        for g in self.data.G:
+            for t in self.data.T:
+                costo = self.data.CostoVar.get((g, t), self.data.ValorAgua.get((g, t), 0))
+                costos_data.append({'generador': g, 'paso_horario': t, 'costo_operacion': costo})
+        costos_df = pd.DataFrame(costos_data)
+        
+        # Unir los resultados de generación con los costos de operación
+        gen_con_costos = pd.merge(gen_df, costos_df, on=['generador', 'paso_horario'])
+        
+        # Unir costos marginales con la generación y sus costos
+        merged_df = pd.merge(cml_df, gen_con_costos, on='paso_horario', how='left')
+        
+        # Reseteamos el índice para garantizar que sea único antes de usar idxmin (solución anterior)
+        merged_df.reset_index(drop=True, inplace=True)
+
+        # Encontrar la central marginal
+        centrales_info = self.data.api.get_centrales_info().set_index('id_central')
+        merged_df['barra_gen'] = merged_df['generador'].map(centrales_info['id_barra'])
+        
+        #merged_df = merged_df[merged_df['barra'] == merged_df['barra_gen']]
+        
+        merged_df['diff_costo'] = abs(merged_df['costo_marginal_usd_mwh'] - merged_df['costo_operacion'])
+        
+        # Para cada barra y paso horario, encontramos la central con la mínima diferencia
+        idx = merged_df.groupby(['barra', 'paso_horario'])['diff_costo'].idxmin()
+        centrales_marginales_df = merged_df.loc[idx][['barra', 'paso_horario', 'generador']]
+        centrales_marginales_df.rename(columns={'generador': 'central_marginal'}, inplace=True)
+        
+        # Unimos esta información al DataFrame original de costos marginales
+        # Usamos la copia local 'cml_df', no el original de 'results_dfs'
+        cml_df_final = pd.merge(cml_df, centrales_marginales_df, on=['barra', 'paso_horario'], how='left')
+        results_dfs['costo_marginal'] = cml_df_final.fillna('Congestion/Solar')
+        
+        return results_dfs
+    
     def get_results_as_dataframes(self):
         """
         Extrae los resultados de las variables del modelo resuelto y los
-        convierte en DataFrames de pandas para un fácil análisis.
+        convierte en DataFrames de pandas para un fácil análisis, incluyendo
+        columnas de año, mes y hora (0-23).
         
         Returns:
             dict: Un diccionario de DataFrames, con una clave por cada tipo de variable.
@@ -545,11 +632,12 @@ class OptimizationModel:
         # Generación horaria (p)
         p_data = []
         for (g, t), var in self.model.p.items():
-            if pyo.value(var, exception=False) > 1e-6: # Solo guardar si hay generación
-                p_data.append({'generador': g, 'hora': t, 'generacion_mw': pyo.value(var)})
+            if pyo.value(var, exception=False) > 1e-6:
+                # Usamos 'paso_horario' como identificador único de tiempo
+                p_data.append({'generador': g, 'paso_horario': t, 'generacion_mw': pyo.value(var)})
         results_dfs['generacion'] = pd.DataFrame(p_data)
         
-        # Estado de encendido mensual (u)
+        # Estado de encendido mensual (u) - No tiene dimensión horaria, no se modifica
         u_data = []
         for (g, m), var in self.model.u.items():
             u_data.append({'generador': g, 'mes': m, 'encendido': int(pyo.value(var))})
@@ -558,18 +646,69 @@ class OptimizationModel:
         # Vertimiento solar (p_vert)
         vert_data = []
         for (g, t), var in self.model.p_vert.items():
-            if pyo.value(var, exception=False) > 1e-6: # Solo guardar si hay vertimiento
-                vert_data.append({'generador': g, 'hora': t, 'vertimiento_mw': pyo.value(var)})
+            if pyo.value(var, exception=False) > 1e-6:
+                vert_data.append({'generador': g, 'paso_horario': t, 'vertimiento_mw': pyo.value(var)})
         results_dfs['vertimiento'] = pd.DataFrame(vert_data)
 
         # Flujo en líneas (f)
         f_data = []
         for (l, t), var in self.model.f.items():
             flow_val = pyo.value(var, exception=False)
-            if abs(flow_val) > 1e-6: # Solo guardar si hay flujo
-                f_data.append({'linea': l, 'hora': t, 'flujo_mw': flow_val})
+            if abs(flow_val) > 1e-6:
+                f_data.append({'linea': l, 'paso_horario': t, 'flujo_mw': flow_val})
         results_dfs['flujo'] = pd.DataFrame(f_data)
+        
+        # Extracción de Costos Marginales
+        cml_data = []
+        for (b, t), constr in self.model.power_balance_constr.items():
+            cml_data.append({'barra': b, 'paso_horario': t, 'costo_marginal_usd_mwh': self.model.dual[constr]})
+        results_dfs['costo_marginal'] = pd.DataFrame(cml_data)
 
+        # Extracción de la Demanda
+        demanda_data = []
+        for b in self.data.B:
+            for t in self.data.T:
+                demanda_val = self.data.Demanda.get((b, t), 0)
+                if demanda_val > 0:
+                    demanda_data.append({'barra': b, 'paso_horario': t, 'demanda_mw': demanda_val})
+        results_dfs['demanda'] = pd.DataFrame(demanda_data)
+
+        # Se llama a la función auxiliar (modificada para usar 'paso_horario')
+        results_dfs = self._add_marginal_generator_info(results_dfs)
+        
+        # EXTRACCIÓN DE NIVELES DE EMBALSE MENSUALES
+        if hasattr(self.data, 'NivelEmbalseMensual'):
+            cota_data = []
+            for (g, m), nivel in self.data.NivelEmbalseMensual.items():
+                cota_data.append({'generador': g, 'mes': m, 'nivel_embalse_mwh': nivel})
+            if cota_data:
+                results_dfs['nivel_embalse_mensual'] = pd.DataFrame(cota_data)
+
+        # --- NUEVO: CONVERSIÓN DE PASO HORARIO A FECHA Y HORA ---
+        # Asumimos que la simulación empieza el 1 de enero de un año base (ej. 2024)
+        año_base = getattr(self.data, 'Año', 2025)
+        start_date = pd.to_datetime(f'{año_base}-01-01')
+
+        # DataFrames que contienen la columna de tiempo a convertir
+        dfs_con_tiempo = ['generacion', 'vertimiento', 'flujo', 'costo_marginal', 'demanda']
+        
+        for df_name in dfs_con_tiempo:
+            if df_name in results_dfs and not results_dfs[df_name].empty:
+                df = results_dfs[df_name]
+                
+                # 1. Crear la columna de fecha y hora directamente desde los timestamps
+                # Esta columna será de tipo datetime64[ns], ideal para análisis
+                df['fecha_hora'] = start_date + pd.to_timedelta(df['paso_horario'], unit='h')
+                
+                # 2. Eliminar la columna auxiliar 'paso_horario'
+                df.drop(columns=['paso_horario'], inplace=True)
+                
+                # 3. Reordenar para que la fecha y hora aparezcan primero
+                columnas_existentes = [col for col in df.columns if col != 'fecha_hora']
+                df = df[['fecha_hora'] + columnas_existentes]
+                
+                results_dfs[df_name] = df
+        
         print("Extracción de resultados completada.")
         return results_dfs
       
@@ -819,7 +958,7 @@ if __name__ == '__main__':
   
   # 4. Resolver el modelo
   # Asegúrate de tener CPLEX instalado y accesible en el PATH de tu sistema.
-  opt_model.solve(solver_name='cplex')
+  opt_model.solve_and_get_duals(solver_name='cplex')
 
 
   # ---------- AVISO DE HORAS CON SOLAR CLIPPEADA ----------
