@@ -250,6 +250,46 @@ class ModelData:
               print(f"Advertencia al procesar la generación para {g}: {e}")
 
       print(f"Parámetro 'PdispSolar' creado con {len(self.PdispSolar)} entradas.")
+      
+      # --- Parámetros para el Balance Hídrico ---
+      self.Afluente = {}
+      self.CotaInicial = {}
+      
+      centrales_df = self.api.get_centrales_info()
+      
+      for g in self.G_hidro:
+          # 1. Guardar la Cota Inicial para cada central hidroeléctrica
+          info_hidro = centrales_df[centrales_df['id_central'] == g].iloc[0]
+          self.CotaInicial[g] = info_hidro['cota_inicial_mwh']
+          
+          # 2. Calcular el afluente horario a partir de los datos mensuales
+          caudal_df = self.api.get_caudal(g, hidrologia='media')
+          caudal_map = caudal_df.set_index(['Año', 'Mes'])['Caudal_MWh'].to_dict()
+          
+          # Iteramos sobre cada mes del horizonte de simulación
+          for m in self.M:
+              horas_del_mes = self.T_m.get(m, [])
+              if not horas_del_mes:
+                  continue
+              
+              num_horas_mes = len(horas_del_mes)
+              
+              # Obtenemos el año y mes para buscar el caudal
+              timestamp_mes = self.hourly_mapping_num_to_ts[horas_del_mes[0]]
+              año_relativo = timestamp_mes.year - 2025 + 1
+              mes_calendario = timestamp_mes.month
+              
+              caudal_mensual = caudal_map.get((año_relativo, mes_calendario), 0)
+              
+              # Distribuimos el caudal mensual uniformemente en cada hora del mes
+              afluente_horario = caudal_mensual / num_horas_mes
+              
+              # Asignamos el mismo afluente horario a todas las horas de este mes
+              for t in horas_del_mes:
+                  self.Afluente[(g, t)] = afluente_horario
+                  
+      print(f"Parámetro 'Afluente' (horario) creado con {len(self.Afluente)} entradas.")
+      print(f"Parámetro 'CotaInicial' creado con {len(self.CotaInicial)} entradas.")
 
 class OptimizationModel:
     """
@@ -416,12 +456,13 @@ class OptimizationModel:
         self.model.monthly_energy_budget_constr = pyo.Constraint(generadores_gestionables, self.data.M, rule=monthly_energy_budget_rule)
         print("OK: Restricción 'Presupuesto Mensual de Energía' construida.")
 
-
         def solar_cap_limit_rule(model, t):
             return sum(model.p[g, t] for g in self.data.G_solar) <= 50
         self.model.solar_cap_limit = pyo.Constraint(self.data.T,
                                                     rule=solar_cap_limit_rule)
         print("OK: Restricción 'Solar inyectada ≤ 50 MW' construida.")
+        
+        
 
 
     def solve(self, solver_name='cplex'):
