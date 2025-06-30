@@ -4,7 +4,7 @@ import matplotlib.ticker as mticker
 import os
 import calendar
 
-# --- Funciones Auxiliares para cada tipo de Gráfico de Costos ---
+# --- Las funciones auxiliares (_plot_costos_diarios, etc.) no necesitan cambios ---
 
 def _plot_costos_diarios(df_periodo, fecha, ax):
     """Genera el gráfico de costos marginales horarios para un solo día."""
@@ -57,9 +57,9 @@ def _plot_costos_rango_anual(df_periodo, fecha, ax):
     ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
 
 
-# --- Función Principal ---
+# --- Función Principal (Modificada) ---
 
-def generar_grafico_costos(periodo, ruta_cmg_csv, carpeta_salida):
+def generar_grafico_costos(periodo, ruta_cmg_csv, carpeta_salida, escenario):
     """
     Genera un gráfico de costos marginales. Soporta los siguientes formatos de período:
     - "YYYY-MM-DD": Gráfico horario.
@@ -68,7 +68,6 @@ def generar_grafico_costos(periodo, ruta_cmg_csv, carpeta_salida):
     - "YYYY-YYYY": Resumen de promedio anual para el rango de años.
     """
     try:
-        # No necesitamos la columna 'central_marginal' así que la podemos omitir al cargar
         df = pd.read_csv(ruta_cmg_csv, sep=';', parse_dates=['fecha_hora'], usecols=['fecha_hora', 'barra', 'costo_marginal_usd_mwh'])
     except FileNotFoundError:
         print(f"Error: No se encontró el archivo de costos marginales en: {ruta_cmg_csv}")
@@ -77,7 +76,6 @@ def generar_grafico_costos(periodo, ruta_cmg_csv, carpeta_salida):
         print("Error: El CSV de costos no tiene las columnas esperadas. Se necesitan: 'fecha_hora', 'barra', 'costo_marginal_usd_mwh'.")
         return
 
-    # Lógica para detectar el tipo de período y filtrar los datos
     try:
         if len(periodo) == 10 and periodo.count('-') == 2: # Día
             df_periodo = df[df['fecha_hora'].dt.date == pd.to_datetime(periodo).date()].copy()
@@ -100,41 +98,45 @@ def generar_grafico_costos(periodo, ruta_cmg_csv, carpeta_salida):
     if df_periodo.empty:
         print(f"No se encontraron datos de costos para el período: {periodo}"); return
 
-    # Creación del gráfico
+    # --- CAMBIO 1: Añadir título principal con el nombre del escenario ---
     fig, ax = plt.subplots(figsize=(16, 8))
+    fig.suptitle(f'Escenario Hidrológico: {escenario.upper()}', fontsize=20, fontweight='bold')
     
     plot_func(df_periodo, periodo, ax)
     
-    # Ajustes finales del gráfico
     ax.set_ylabel('Costo Marginal (USD/MWh)', fontsize=12)
     ax.tick_params(axis='x', rotation=0)
     ax.grid(True, which='both', linestyle='--', linewidth=0.5)
     ax.legend(title='Barra')
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, p: f'{x:,.0f}'))
     
-    plt.tight_layout()
+    # Ajustar layout para que el supertítulo no se superponga
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
 
-    # Guardar la figura
     if not os.path.exists(carpeta_salida):
         os.makedirs(carpeta_salida)
         
     ruta_guardado = os.path.join(carpeta_salida, f'grafico_costo_marginal_{periodo}.png')
-    # plt.savefig(ruta_guardado, dpi=300)
+    plt.savefig(ruta_guardado, dpi=300)
     print(f"Gráfico guardado exitosamente en: {ruta_guardado}")
     plt.show()
 
 # --- CONFIGURACIÓN Y EJECUCIÓN ---
 if __name__ == "__main__":
-    # --- ¡Elige el período que quieres analizar! ---
+    # --- ¡Elige el escenario y período que quieres analizar! ---
+    # --- CAMBIO 2: Seleccionar el escenario a graficar ---
+    ESCENARIO = "MEDIA"  # Puedes cambiarlo a "SECA" o "HUMEDA"
+
     # Descomenta la línea que quieras usar y comenta las otras.
-
-    # PERIODO_SELECCIONADO = "2025-01-01"  # Vista detallada de un día
-    # PERIODO_SELECCIONADO = "2025-01"     # Resumen de un mes (promedio diario)
+    # PERIODO_SELECCIONADO = "2025-01-15"   # Vista detallada de un día
+    # PERIODO_SELECCIONADO = "2034-07"     # Resumen de un mes (promedio diario)
     PERIODO_SELECCIONADO = "2034"         # Resumen de un año (promedio mensual)
-    # PERIODO_SELECCIONADO = "2025-2034"     # Resumen de un rango de años (promedio anual)
+    # PERIODO_SELECCIONADO = "2025-2034"   # Resumen de un rango de años (promedio anual)
     
-    # Rutas a los archivos de datos
-    RUTA_COSTO_MARGINAL_CSV = os.path.join("resultados_simulacion", "resultados_costo_marginal.csv")
-    CARPETA_GRAFICOS = os.path.join("resultados_simulacion", "graficos")
+    # --- CAMBIO 3: Rutas dinámicas basadas en el escenario ---
+    CARPETA_BASE = f"resultados_simulacion_{ESCENARIO}"
+    RUTA_COSTO_MARGINAL_CSV = os.path.join(CARPETA_BASE, "resultados_costo_marginal.csv")
+    CARPETA_GRAFICOS = os.path.join(CARPETA_BASE, "graficos")
 
-    generar_grafico_costos(PERIODO_SELECCIONADO, RUTA_COSTO_MARGINAL_CSV, CARPETA_GRAFICOS)
+    # Pasamos el escenario a la función para usarlo en el título
+    generar_grafico_costos(PERIODO_SELECCIONADO, RUTA_COSTO_MARGINAL_CSV, CARPETA_GRAFICOS, ESCENARIO)

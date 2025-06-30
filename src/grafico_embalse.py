@@ -4,7 +4,7 @@ import matplotlib.ticker as mticker
 import os
 import calendar
 
-# --- Funciones Auxiliares para cada tipo de Gráfico de Embalses ---
+# --- Las funciones auxiliares (_plot_embalses_anual, _plot_embalses_rango_anual) no necesitan cambios ---
 
 def _plot_embalses_anual(df_periodo, fecha, ax):
     """
@@ -44,11 +44,11 @@ def _plot_embalses_rango_anual(df_periodo, fecha, ax):
     ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
 
 
-# --- Función Principal ---
+# --- Función Principal (Modificada) ---
 
-def generar_grafico_embalses(periodo, ruta_csv, carpeta_salida):
+def generar_grafico_embalses(periodo, ruta_csv, carpeta_salida, escenario):
     """
-    Genera un gráfico de nivel de embalses a partir de un índice de mes contínuo.
+    Genera un gráfico de nivel de embalses a partir de datos horarios.
     - "YYYY": Evolución mensual para ese año.
     - "YYYY-YYYY": Evolución del nivel a fin de año para ese rango.
     """
@@ -58,29 +58,37 @@ def generar_grafico_embalses(periodo, ruta_csv, carpeta_salida):
         print(f"Error: No se encontró el archivo en: {ruta_csv}")
         return
 
-    required_cols = {'generador', 'mes', 'nivel_embalse_mwh'}
+    # --- CAMBIO 1: Validar las nuevas columnas requeridas ---
+    required_cols = {'generador', 'fecha_hora', 'nivel_embalse_mwh'}
     if not required_cols.issubset(df.columns):
         print(f"Error: El archivo CSV debe contener las columnas: {', '.join(required_cols)}")
         return
     
-    # --- PASO CLAVE: Traducir el mes contínuo (1-120) a año y mes del año (1-12) ---
-    start_year = 2025
-    # El mes 1 a 12  -> offset 0 -> año 2025. (1-1)//12 = 0
-    # El mes 13 a 24 -> offset 1 -> año 2026. (13-1)//12 = 1
-    df['año'] = start_year + (df['mes'] - 1) // 12
-    # El mes 1 -> (1-1)%12+1 = 1. El mes 13 -> (13-1)%12+1 = 1.
-    df['mes_del_año'] = (df['mes'] - 1) % 12 + 1
+    # --- CAMBIO 2: Procesar la columna 'fecha_hora' en lugar de 'mes' ---
+    # Convertir la columna de fecha a formato datetime de pandas
+    df['fecha_hora'] = pd.to_datetime(df['fecha_hora'])
     
-    df['nivel_embalse_gwh'] = df['nivel_embalse_mwh'] / 1000
+    # Para poder graficar, necesitamos agrupar los datos horarios en mensuales.
+    # Usaremos el último valor registrado de cada mes como representativo.
+    df = df.set_index('fecha_hora')
+    # Agrupamos por generador, remuestreamos a frecuencia mensual ('M') y tomamos el último valor.
+    df_mensual = df.groupby('generador').resample('M').last().drop(columns='generador').reset_index()
 
+    # Ahora creamos las columnas de 'año' y 'mes_del_año' a partir del índice de fecha
+    df_mensual['año'] = df_mensual['fecha_hora'].dt.year
+    df_mensual['mes_del_año'] = df_mensual['fecha_hora'].dt.month
+    
+    df_mensual['nivel_embalse_gwh'] = df_mensual['nivel_embalse_mwh'] / 1000
+
+    # --- El resto de la lógica de filtrado y graficado usa el nuevo df_mensual ---
     try:
         if len(periodo) == 4 and periodo.isdigit(): # Año (YYYY)
-            df_periodo = df[df['año'] == int(periodo)].copy()
+            df_periodo = df_mensual[df_mensual['año'] == int(periodo)].copy()
             plot_func = _plot_embalses_anual
         elif len(periodo) == 9 and periodo.count('-') == 1: # Rango de Años (YYYY-YYYY)
             start_year_filter, end_year_filter = [int(p) for p in periodo.split('-')]
-            mask = (df['año'] >= start_year_filter) & (df['año'] <= end_year_filter)
-            df_periodo = df[mask].copy()
+            mask = (df_mensual['año'] >= start_year_filter) & (df_mensual['año'] <= end_year_filter)
+            df_periodo = df_mensual[mask].copy()
             plot_func = _plot_embalses_rango_anual
         else:
             raise ValueError(f"Formato de período '{periodo}' no es válido para embalses. Use 'YYYY' o 'YYYY-YYYY'.")
@@ -92,6 +100,9 @@ def generar_grafico_embalses(periodo, ruta_csv, carpeta_salida):
 
     fig, ax = plt.subplots(figsize=(16, 8))
     
+    # Añadimos el escenario al título
+    fig.suptitle(f'Escenario Hidrológico: {escenario.upper()}', fontsize=20, fontweight='bold')
+    
     plot_func(df_periodo, periodo, ax)
     
     ax.set_ylabel('Nivel del Embalse (GWh)', fontsize=12)
@@ -100,24 +111,29 @@ def generar_grafico_embalses(periodo, ruta_csv, carpeta_salida):
     ax.legend(title='Embalse')
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, p: f'{x:,.0f}'))
     
-    plt.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.96]) # Ajustar para el supertítulo
 
     if not os.path.exists(carpeta_salida):
         os.makedirs(carpeta_salida)
         
     ruta_guardado = os.path.join(carpeta_salida, f'grafico_nivel_embalses_{periodo}.png')
-    # plt.savefig(ruta_guardado, dpi=300)
+    plt.savefig(ruta_guardado, dpi=300)
     print(f"Gráfico guardado exitosamente en: {ruta_guardado}")
     
     plt.show()
 
 # --- CONFIGURACIÓN Y EJECUCIÓN ---
 if __name__ == "__main__":
-    # --- ¡Elige el período que quieres analizar! ---
-    # PERIODO_SELECCIONADO = "2025"      # Para ver la evolución mensual de un año
-    PERIODO_SELECCIONADO = "2025-2034"  # Para ver la tendencia a largo plazo (nivel a fin de año)
+    # --- ¡Elige el escenario y período que quieres analizar! ---
+    # --- CAMBIO 3: Seleccionar el escenario a graficar ---
+    ESCENARIO = "MEDIA"  # Puedes cambiarlo a "SECA" o "HUMEDA"
     
-    RUTA_EMBALSES_CSV = os.path.join("resultados_simulacion", "resultados_nivel_embalse_mensual.csv")
-    CARPETA_GRAFICOS = os.path.join("resultados_simulacion", "graficos")
+    PERIODO_SELECCIONADO = "2025"      # Para ver la evolución mensual de un año
+    # PERIODO_SELECCIONADO = "2025-2034"  # Para ver la tendencia a largo plazo (nivel a fin de año)
+    
+    # --- CAMBIO 4: Rutas dinámicas basadas en el escenario ---
+    CARPETA_BASE = f"resultados_simulacion_{ESCENARIO}"
+    RUTA_EMBALSES_CSV = os.path.join(CARPETA_BASE, "resultados_nivel_embalse_horario.csv")
+    CARPETA_GRAFICOS = os.path.join(CARPETA_BASE, "graficos")
 
-    generar_grafico_embalses(PERIODO_SELECCIONADO, RUTA_EMBALSES_CSV, CARPETA_GRAFICOS)
+    generar_grafico_embalses(PERIODO_SELECCIONADO, RUTA_EMBALSES_CSV, CARPETA_GRAFICOS, ESCENARIO)

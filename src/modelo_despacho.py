@@ -12,14 +12,15 @@ class ModelData:
     Esta clase utiliza una instancia de ProjectDataAPI para construir
     los conjuntos e índices necesarios para el modelo de optimización de Pyomo.
     """
-    def __init__(self, data_api: ProjectDataAPI, months_to_run: int = None):
+    def __init__(self, data_api: ProjectDataAPI, hidrologia: str = 'media', months_to_run: int = None):
         """
         Inicializa y construye los conjuntos a partir de la API de datos.
         """
         self.api = data_api
         self.months_to_run = months_to_run
+        self.hidrologia = hidrologia
         self._create_all_sets()
-        print("Paso 1 completado: Todos los conjuntos e índices han sido creados usando la API.")
+        print(f"Paso 1 completado: Usando la hidrología '{self.hidrologia}'.")
         self._create_parameters()
        
     def _create_all_sets(self):
@@ -254,6 +255,36 @@ class ModelData:
       # --- Parámetros para el Balance Hídrico ---
       self.Afluente = {}
       self.CotaInicial = {}
+      self.CotaMaxima = {}
+      
+      # --- Cálculo del Valor Terminal del Agua (dependiente del escenario) ---
+      self.ValorTerminalAgua = {}
+      
+      # 1. Calcular el costo térmico promedio como valor base.
+      if self.CostoVar:
+          costo_promedio_termico = sum(self.CostoVar.values()) / len(self.CostoVar)
+      else:
+          costo_promedio_termico = 60.0 # Un valor por defecto si no hay centrales térmicas.
+      
+      # 2. Ajustar el valor terminal usando una heurística basada en el escenario.
+      #    self.hidrologia se define al crear el objeto ModelData.
+      if self.hidrologia == 'P10': # Escenario SECO
+          # En sequía, el agua futura es más valiosa para evitar usar diésel caro.
+          VALOR_TERMINAL_CONSTANTE = 1.5 * costo_promedio_termico
+          print(f"Hidrología SECA (P10) detectada. Usando Valor Terminal ALTO: {VALOR_TERMINAL_CONSTANTE:.2f} USD/MWh")
+      
+      elif self.hidrologia == 'P90': # Escenario HÚMEDO
+          # En abundancia, el agua futura tiene menos valor marginal.
+          VALOR_TERMINAL_CONSTANTE = 0.8 * costo_promedio_termico
+          print(f"Hidrología HÚMEDA (P90) detectada. Usando Valor Terminal BAJO: {VALOR_TERMINAL_CONSTANTE:.2f} USD/MWh")
+      
+      else: # Escenario MEDIA o por defecto
+          VALOR_TERMINAL_CONSTANTE = costo_promedio_termico
+          print(f"Hidrología MEDIA detectada. Usando Valor Terminal BASE: {VALOR_TERMINAL_CONSTANTE:.2f} USD/MWh")
+
+      # 3. Asignar el valor terminal calculado a cada central hidroeléctrica.
+      for g in self.G_hidro:
+          self.ValorTerminalAgua[g] = VALOR_TERMINAL_CONSTANTE
       
       centrales_df = self.api.get_centrales_info()
       
@@ -261,6 +292,9 @@ class ModelData:
           # 1. Guardar la Cota Inicial para cada central hidroeléctrica
           info_hidro = centrales_df[centrales_df['id_central'] == g].iloc[0]
           self.CotaInicial[g] = info_hidro['cota_inicial_mwh']
+          self.CotaMaxima[g] = info_hidro['cota_maxima_mwh']
+          
+          self.ValorTerminalAgua[g] = VALOR_TERMINAL_CONSTANTE
           
           # 2. Calcular el afluente horario a partir de los datos mensuales
           caudal_df = self.api.get_caudal(g, hidrologia='media')
@@ -354,25 +388,34 @@ class OptimizationModel:
 
     def _build_objective(self):
         """
-        Define la función objetivo del modelo: minimizar el costo total de operación.
+        Define la función objetivo del modelo: minimizar el costo total de operación,
+        maximizando implícitamente el valor del agua remanente.
         """
-        print("Construyendo la función objetivo...")
+        print("Construyendo la función objetivo final...")
         
-        # Generadores con costo variable (combustible)
+        # 1. Suma de los costos de combustible de las centrales térmicas y diésel.
+        #    (Esto es lo que queremos minimizar)
         generadores_costo_combustible = self.data.G_termica + self.data.G_diesel
-        
-        # Costo total por combustible
         costo_combustible = sum(self.data.CostoVar[g, t] * self.model.p[g, t] 
                                 for g in generadores_costo_combustible 
                                 for t in self.data.T 
                                 if (g, t) in self.data.CostoVar)
         
-        # La función objetivo es la suma de ambos costos
-        costo_total = costo_combustible
+        # 2. Suma del valor del agua que queda en los embalses en la última hora.
+        #    (Esto es lo que queremos maximizar)
+        T_final = self.data.T[-1] # Obtenemos el índice de la última hora de la simulación
+        valor_agua_remanente = sum(self.data.ValorTerminalAgua[g] * self.model.v[g, T_final] 
+                                   for g in self.data.G_hidro)
         
-        self.model.objective = pyo.Objective(expr=costo_total, sense=pyo.minimize)
+        # 3. La función objetivo final.
+        #    Minimizar (Costos) es igual a Minimizar (Costos - Ingresos/Beneficios).
+        #    Al restar el valor del agua remanente, el modelo es incentivado a
+        #    maximizar ese valor para minimizar el resultado total.
+        costo_total_neto = costo_combustible - valor_agua_remanente
         
-        print("Función objetivo construida exitosamente.")
+        self.model.objective = pyo.Objective(expr=costo_total_neto, sense=pyo.minimize)
+        
+        print("Función objetivo final construida exitosamente.")
         
     def _build_constraints(self):
         """Define todas las restricciones del modelo."""
@@ -485,6 +528,34 @@ class OptimizationModel:
                                                          self.data.T, 
                                                          rule=water_balance_rule)
         print("OK: Restricción 'Balance Hídrico' construida.")
+        
+        
+        # --- 9. Límite de Generación por Agua Disponible ---
+        def hydro_generation_water_limit_rule(model, g, t):
+            # Para la primera hora, la generación está limitada por la cota inicial más el primer afluente.
+            if t == self.data.T[0]:
+                agua_disponible = self.data.CotaInicial[g] + self.data.Afluente.get((g, t), 0)
+                return model.p[g, t] <= agua_disponible
+            
+            # Para las demás horas, la generación está limitada por el volumen de la hora anterior más el afluente actual.
+            else:
+                agua_disponible = model.v[g, t-1] + self.data.Afluente.get((g, t), 0)
+                return model.p[g, t] <= agua_disponible
+        
+        self.model.hydro_generation_water_limit_constr = pyo.Constraint(self.data.G_hidro, 
+                                                                        self.data.T, 
+                                                                        rule=hydro_generation_water_limit_rule)
+        print("OK: Restricción 'Límite de Generación por Agua Disponible' construida.")
+        
+        
+        def reservoir_max_limit_rule(model, g, t):
+            # El volumen en cualquier hora t no puede superar la cota máxima del embalse.
+            return model.v[g, t] <= self.data.CotaMaxima[g]
+
+        self.model.reservoir_max_limit_constr = pyo.Constraint(self.data.G_hidro, 
+                                                               self.data.T, 
+                                                               rule=reservoir_max_limit_rule)
+        print("OK: Restricción 'Límites de Capacidad del Embalse' construida.")
 
 
     def solve(self, solver_name='cplex'):
@@ -563,17 +634,15 @@ class OptimizationModel:
         """
         print("Identificando la central marginal para cada paso horario...")
         
-        # --- LA SOLUCIÓN CLAVE ---
-        # Usamos .copy() para crear copias independientes y evitar modificar los DFs originales.
         cml_df = results_dfs['costo_marginal'].copy()
         gen_df = results_dfs['generacion'].copy()
-        # -------------------------
 
         # Crear una tabla de costos de cada generador en cada hora
         costos_data = []
         for g in self.data.G:
             for t in self.data.T:
-                costo = self.data.CostoVar.get((g, t), self.data.ValorAgua.get((g, t), 0))
+                # El costo de operación es el CostoVariable, o 0 si no tiene (hidro/solar).
+                costo = self.data.CostoVar.get((g, t), 0)
                 costos_data.append({'generador': g, 'paso_horario': t, 'costo_operacion': costo})
         costos_df = pd.DataFrame(costos_data)
         
@@ -583,14 +652,11 @@ class OptimizationModel:
         # Unir costos marginales con la generación y sus costos
         merged_df = pd.merge(cml_df, gen_con_costos, on='paso_horario', how='left')
         
-        # Reseteamos el índice para garantizar que sea único antes de usar idxmin (solución anterior)
         merged_df.reset_index(drop=True, inplace=True)
 
         # Encontrar la central marginal
         centrales_info = self.data.api.get_centrales_info().set_index('id_central')
         merged_df['barra_gen'] = merged_df['generador'].map(centrales_info['id_barra'])
-        
-        #merged_df = merged_df[merged_df['barra'] == merged_df['barra_gen']]
         
         merged_df['diff_costo'] = abs(merged_df['costo_marginal_usd_mwh'] - merged_df['costo_operacion'])
         
@@ -600,7 +666,6 @@ class OptimizationModel:
         centrales_marginales_df.rename(columns={'generador': 'central_marginal'}, inplace=True)
         
         # Unimos esta información al DataFrame original de costos marginales
-        # Usamos la copia local 'cml_df', no el original de 'results_dfs'
         cml_df_final = pd.merge(cml_df, centrales_marginales_df, on=['barra', 'paso_horario'], how='left')
         results_dfs['costo_marginal'] = cml_df_final.fillna('Congestion/Solar')
         
@@ -652,6 +717,15 @@ class OptimizationModel:
                 f_data.append({'linea': l, 'paso_horario': t, 'flujo_mw': flow_val})
         results_dfs['flujo'] = pd.DataFrame(f_data)
         
+        # Nivel del embalse horario (v)
+        v_data = []
+        for (g, t), var in self.model.v.items():
+            # Guardamos el nivel del embalse, incluso si es cercano a cero.
+            vol_val = pyo.value(var, exception=False)
+            if vol_val is not None:
+                v_data.append({'generador': g, 'paso_horario': t, 'nivel_embalse_mwh': vol_val})
+        results_dfs['nivel_embalse_horario'] = pd.DataFrame(v_data)
+        
         # Extracción de Costos Marginales
         cml_data = []
         for (b, t), constr in self.model.power_balance_constr.items():
@@ -676,7 +750,7 @@ class OptimizationModel:
         start_date = pd.to_datetime(f'{año_base}-01-01')
 
         # DataFrames que contienen la columna de tiempo a convertir
-        dfs_con_tiempo = ['generacion', 'vertimiento', 'flujo', 'costo_marginal', 'demanda']
+        dfs_con_tiempo = ['generacion', 'vertimiento', 'flujo', 'costo_marginal', 'demanda', 'nivel_embalse_horario']
         
         for df_name in dfs_con_tiempo:
             if df_name in results_dfs and not results_dfs[df_name].empty:
@@ -717,261 +791,25 @@ class OptimizationModel:
             print(f" - Archivo '{filepath}' guardado exitosamente.")
 
 if __name__ == '__main__':
-  api = ProjectDataAPI(data_path='data')
+    api = ProjectDataAPI(data_path='data')
 
-  model_data = ModelData(data_api=api, months_to_run=120)
+    # --- Escenario 1: Hidrología MEDIA ---
+    print("\n--- INICIANDO SIMULACIÓN: HIDROLOGÍA MEDIA ---")
+    model_data_media = ModelData(data_api=api, hidrologia='media', months_to_run=120)
+    opt_model_media = OptimizationModel(model_data=model_data_media)
+    opt_model_media.solve_and_get_duals(solver_name='cplex')
+    opt_model_media.save_results_to_csv(output_folder="resultados_simulacion_MEDIA")
 
-  print("\n--- CONJUNTOS DE GENERADORES ---")
-  print(f"G (Todos): {model_data.G}")
-  print(f"G_termica: {model_data.G_termica}")
-  
-  print("\n--- CONJUNTOS DE LA RED ---")
-  print(f"B (Barras): {model_data.B}")
-  print(f"L (Líneas): {model_data.L}")
+    # --- Escenario 2: Hidrología SECA (P10) ---
+    print("\n--- INICIANDO SIMULACIÓN: HIDROLOGÍA SECA (P10) ---")
+    model_data_seca = ModelData(data_api=api, hidrologia='P10', months_to_run=120)
+    opt_model_seca = OptimizationModel(model_data=model_data_seca)
+    opt_model_seca.solve_and_get_duals(solver_name='cplex')
+    opt_model_seca.save_results_to_csv(output_folder="resultados_simulacion_SECA")
 
-  print("\n--- CONJUNTOS DE TIEMPO ---")
-  print(f"M (Meses): {len(model_data.M)} meses, ej: {model_data.M[:5]}...")
-  print(f"T (Horas): {len(model_data.T)} horas en total")
-  print(f"T_m (Horas en Mes 1): {len(model_data.T_m.get(1, []))} horas")
-
-  print("\n--- CONJUNTOS DE CONECTIVIDAD ---")
-  print(f"G_b (Generadores por Barra): {model_data.G_b}")
-  print(f"L_out (Líneas que salen de Barra): {model_data.L_out}")
-  print(f"L_in (Líneas que entran a Barra): {model_data.L_in}")  
-  
-  print("\n--- VALIDACIÓN DE PARÁMETROS ---")
-        
-  # Seleccionamos un generador y horas específicas para verificar
-  generador_a_verificar = 'TERMICA-NORTE-01'
-  hora_mes_1 = 1
-  
-  # La primera hora del mes 2 (asumiendo que el mes 1 tiene 744 horas)
-  primera_hora_mes_2 = model_data.T_m.get(1, [])[-1] + 1 
-
-  print(f"Verificando costos para el generador: {generador_a_verificar}")
-
-  costo_h1 = model_data.CostoVar.get((generador_a_verificar, hora_mes_1))
-  print(f"  - Costo en la hora {hora_mes_1} (Mes 1): {costo_h1}")
-
-  costo_h2 = model_data.CostoVar.get((generador_a_verificar, primera_hora_mes_2))
-  print(f"  - Costo en la hora {primera_hora_mes_2} (Mes 2): {costo_h2}")
-  
-  print("\n--- VALIDACIÓN PARÁMETRO ValorAgua ---")
-  #for generador_hidro in model_data.G_hidro:
-  #  plot_hydro_validation(model_data, generador_hidro)
-  
-  print("\n--- VALIDACIÓN PARÁMETROS Pmin, Pmax_inst y EnergiaMaxMensual ---")
-
-  gen_termica = model_data.G_termica[0] if model_data.G_termica else None
-  gen_hidro = model_data.G_diesel[0] if model_data.G_hidro else None
-
-  if gen_termica:
-      pmin_termica = model_data.Pmin.get(gen_termica)
-      pmax_inst_termica = model_data.Pmax_inst.get(gen_termica)
-      energia_max_mes_1 = model_data.EnergiaMaxMensual.get((gen_termica, 1))
-      energia_max_mes_2 = model_data.EnergiaMaxMensual.get((gen_termica, 2))
-      
-      print(f"Verificando {gen_termica} (Térmica):")
-      print(f"  - Pmin: {pmin_termica} MW")
-      print(f"  - Pmax Instantáneo: {pmax_inst_termica} MW (constante)")
-      print(f"  - Energía Máx Mensual (Mes 1): {energia_max_mes_1} MWh")
-      print(f"  - Energía Máx Mensual (Mes 2): {energia_max_mes_2} MWh (debería ser diferente)")
-
-  if gen_hidro:
-      pmin_hidro = model_data.Pmin.get(gen_hidro)
-      pmax_inst_hidro = model_data.Pmax_inst.get(gen_hidro)
-      energia_max_hidro_mes_1 = model_data.EnergiaMaxMensual.get((gen_hidro, 1))
-      
-      print(f"Verificando {gen_hidro} (Hidro):")
-      print(f"  - Pmin: {pmin_hidro} MW")
-      print(f"  - Pmax Instantáneo: {pmax_inst_hidro} MW (constante)")
-      print(f"  - Energía Máx Mensual (Mes 1): {energia_max_hidro_mes_1} MWh")
-      
-  print("\n--- VALIDACIÓN PARÁMETRO Demanda ---")
-  # Verificamos la demanda para cada barra en la primera hora
-  hora_a_verificar = 1
-  for barra in model_data.B:
-      demanda = model_data.Demanda.get((barra, hora_a_verificar))
-      print(f"  - Demanda en Barra '{barra}' en Hora {hora_a_verificar}: {demanda} MW")  
-      
-  print("\n--- VALIDACIÓN PARÁMETRO FlujoMax ---")
-  if model_data.FlujoMax:
-      for linea, capacidad in model_data.FlujoMax.items():
-          print(f"  - Capacidad Máxima de la línea '{linea}': {capacidad} MW")
-  else:
-      print("  - No se cargaron datos de capacidad de líneas.")
-    
-  print("\n--- VALIDACIÓN PARÁMETRO PdispSolar ---")
-  
-  if model_data.G_solar:
-      gen_solar_a_verificar = model_data.G_solar[0]
-      
-      # Verificamos la primera hora del día (debería ser 0)
-      hora_noche = 1 
-      # Verificamos una hora de mediodía (debería ser > 0)
-      hora_dia = 13 
-
-      gen_noche = model_data.PdispSolar.get((gen_solar_a_verificar, hora_noche))
-      gen_dia = model_data.PdispSolar.get((gen_solar_a_verificar, hora_dia))
-
-      print(f"Verificando generación disponible para: {gen_solar_a_verificar}")
-      print(f"  - Generación Solar en Hora {hora_noche} (noche): {gen_noche} MW")
-      print(f"  - Generación Solar en Hora {hora_dia} (mediodía): {gen_dia} MW")
-  else:
-      print("  - No hay generadores solares para validar.")
-      
-  # 2. Construir el modelo de optimización
-  opt_model = OptimizationModel(model_data=model_data)
-
-  # 3. Validar la creación de la variable
-  print("\n--- VALIDACIÓN PASO 3: VARIABLES ---")
-  
-  # Verificamos que el componente 'p' exista en el modelo
-  if hasattr(opt_model.model, 'p'):
-      print("\nVariable 'p' (potencia despachada) ha sido creada exitosamente.")
-      
-      # Contamos cuántas variables individuales se crearon para 'p'
-      # Debería ser |G| * |T|
-      num_variables_p = len(opt_model.model.p)
-      print(f"  - Número total de variables 'p' individuales: {num_variables_p}")
-      print(f"  - (Calculado como |G|={len(model_data.G)} * |T|={len(model_data.T)} = {len(model_data.G) * len(model_data.T)})")
-      
-      # Mostramos un ejemplo de una instancia de variable (aún sin valor)
-      primer_gen = model_data.G[0]
-      primera_hora = model_data.T[0]
-      print(f"  - Ejemplo de una instancia de variable: model.p['{primer_gen}', {primera_hora}]")
-
-  else:
-      print("ERROR: La variable 'p' no fue encontrada en el modelo.")
-      
-  # Verificamos la variable 'u'
-  if hasattr(opt_model.model, 'u'):
-      print("\nVariable 'u' (estado de encendido) ha sido creada exitosamente.")
-      
-      # Contamos cuántas variables individuales se crearon para 'u'
-      # Debería ser |G_termica + G_diesel| * |M|
-      num_variables_u = len(opt_model.model.u)
-      generadores_uc = model_data.G_termica + model_data.G_diesel
-      print(f"  - Número total de variables 'u' individuales: {num_variables_u}")
-      print(f"  - (Calculado como |G_uc|={len(generadores_uc)} * |M|={len(model_data.M)} = {len(generadores_uc) * len(model_data.M)})")
-      
-      # Mostramos un ejemplo de una instancia de variable (aún sin valor)
-      primer_gen_uc = generadores_uc[0]
-      primer_mes = model_data.M[0]
-      print(f"  - Ejemplo de una instancia de variable: model.u['{primer_gen_uc}', {primer_mes}]")
-  else:
-      print("ERROR: La variable 'u' no fue encontrada en el modelo.")
-      
-  # Verificamos la nueva variable 'p_vert'
-  if hasattr(opt_model.model, 'p_vert'):
-      print("\nVariable 'p_vert' (vertimiento solar) ha sido creada exitosamente.")
-      
-      # Contamos cuántas variables individuales se crearon para 'p_vert'
-      num_variables_p_vert = len(opt_model.model.p_vert)
-      print(f"  - Número total de variables 'p_vert': {num_variables_p_vert}")
-      print(f"  - (Calculado como |G_solar|={len(model_data.G_solar)} * |T|={len(model_data.T)} = {len(model_data.G_solar) * len(model_data.T)})")
-
-  else:
-      print("ERROR: La variable 'p_vert' no fue encontrada en el modelo.")
-      
-  # Verificamos la nueva variable 'f'
-  if hasattr(opt_model.model, 'f'):
-      print("\nVariable 'f' (flujo de potencia) ha sido creada exitosamente.")
-      
-      # Contamos cuántas variables individuales se crearon para 'f'
-      num_variables_f = len(opt_model.model.f)
-      print(f"  - Número total de variables 'f': {num_variables_f}")
-      print(f"  - (Calculado como |L|={len(model_data.L)} * |T|={len(model_data.T)} = {len(model_data.L) * len(model_data.T)})")
-
-  else:
-      print("ERROR: La variable 'f' no fue encontrada en el modelo.")
-      
-  # Verificamos que la función objetivo exista
-  if hasattr(opt_model.model, 'objective'):
-      print("OK: Función Objetivo 'objective' creada exitosamente.")
-      print(f"  - Sentido de la optimización: {'Minimizar' if opt_model.model.objective.sense == pyo.minimize else 'Maximizar'}")
-  else:
-      print("ERROR: La Función Objetivo no fue encontrada en el modelo.")
-  
-  print("\nModelo construido exitosamente. Listo para el Paso 5: Definir Restricciones.")
-  
-  # Verificamos que la restricción de balance de potencia exista
-  if hasattr(opt_model.model, 'power_balance_constr'):
-      print("OK: Restricción 'power_balance_constr' creada exitosamente.")
-  else:
-      print("ERROR: La restricción 'power_balance_constr' no fue encontrada.")
-  
-  # Verificamos que la restricción de capacidad de línea exista
-  if hasattr(opt_model.model, 'line_capacity_constr'):
-      print("OK: Restricción 'line_capacity_constr' creada exitosamente.")
-  else:
-      print("ERROR: La restricción 'line_capacity_constr' no fue encontrada.")
-  
-  # Verificamos que la nueva restricción de límites térmicos exista
-  if hasattr(opt_model.model, 'thermal_limits_constr'):
-      print("OK: Restricción 'thermal_limits_constr' creada exitosamente.")
-  else:
-      print("ERROR: La restricción 'thermal_limits_constr' no fue encontrada.")
-      
-  # Verificamos que la nueva restricción de balance solar exista
-  if hasattr(opt_model.model, 'solar_balance_constr'):
-      print("OK: Restricción 'Balance de Generación Solar' creada.")
-  else:
-      print("ERROR: La restricción 'solar_balance_constr' no fue encontrada.")
-  
-  # Verificamos la nueva restricción para centrales flexibles
-  if hasattr(opt_model.model, 'flexible_generation_limits_constr'):
-      print("OK: Restricción 'Límites de Generación Flexible' creada.")
-  else:
-      print("ERROR: La restricción 'flexible_generation_limits_constr' no fue encontrada.")
-  
-  # Verificamos la nueva restricción para energia mensual
-  if hasattr(opt_model.model, 'monthly_energy_budget_constr'):
-    print("OK: Restricción 'Presupuesto Mensual de Energía' creada.")
-  else:
-      print("ERROR: La restricción 'Presupuesto Mensual de Energía' no fue encontrada.")
-  
-  print("\n¡FORMULACIÓN COMPLETA! El modelo está listo para ser resuelto.")
-  
-  # 3. Validar la creación del modelo (opcional, se puede comentar)
-  print("\n--- VALIDACIÓN DEL MODELO CONSTRUIDO ---")
-  print(f"Número de variables: {opt_model.model.nvariables()}")
-  print(f"Número de restricciones: {opt_model.model.nconstraints()}")
-  
-  #opt_model.export_model_to_file("modelo_para_cplex")
-  
-  #debug_infeasibility_v3(model_data=model_data)
-  
-  # 4. Resolver el modelo
-  # Asegúrate de tener CPLEX instalado y accesible en el PATH de tu sistema.
-  opt_model.solve_and_get_duals(solver_name='cplex')
-
-
-  # 5. Validar los resultados (si la solución fue óptima)
-  if opt_model.results.solver.termination_condition == pyo.TerminationCondition.optimal:
-      # 1. Obtener el costo total
-      costo_total = pyo.value(opt_model.model.objective)
-      print(f"\n--- RESULTADOS DE LA OPTIMIZACIÓN ---")
-      print(f"Costo Total de Operación para 1 Mes: ${costo_total:,.2f}")
-      
-      # 2. Obtener los resultados en formato de tablas (DataFrames)
-      resultados_tablas = opt_model.get_results_as_dataframes()
-      
-      if resultados_tablas:
-          # 3. Mostrar un resumen de cada tabla de resultados
-          print("\n--- Resumen de Compromiso de Unidades (Térmicas) ---")
-          print(resultados_tablas['compromiso_unidad'])
-          
-          print("\n--- Resumen de Generación Horaria (primeras 5 filas con generación) ---")
-          print(resultados_tablas['generacion'])
-          
-          print("\n--- Resumen de Flujo en Líneas (primeras 5 filas con flujo) ---")
-          print(resultados_tablas['flujo'].head())
-
-          if not resultados_tablas['vertimiento'].empty:
-              print("\n--- Resumen de Vertimiento Solar (primeras 5 filas con vertimiento) ---")
-              print(resultados_tablas['vertimiento'].head())
-          else:
-              print("\nNo hubo vertimiento solar en la solución.")
-
-      opt_model.save_results_to_csv(output_folder="resultados_simulacion")
+    # --- Escenario 3: Hidrología HÚMEDA (P90) ---
+    print("\n--- INICIANDO SIMULACIÓN: HIDROLOGÍA HÚMEDA (P90) ---")
+    model_data_humeda = ModelData(data_api=api, hidrologia='P90', months_to_run=120)
+    opt_model_humeda = OptimizationModel(model_data=model_data_humeda)
+    opt_model_humeda.solve_and_get_duals(solver_name='cplex')
+    opt_model_humeda.save_results_to_csv(output_folder="resultados_simulacion_HUMEDA")

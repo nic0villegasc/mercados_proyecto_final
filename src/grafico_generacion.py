@@ -4,7 +4,7 @@ import matplotlib.ticker as mticker
 import os
 import calendar
 
-# --- Funciones Auxiliares para cada tipo de Gráfico ---
+# --- Las funciones auxiliares (_plot_daily, etc.) no necesitan cambios ---
 
 def _plot_daily(df_gen, df_dem, fecha, ax, colores):
     """Genera el gráfico detallado por hora para un solo día con curva de demanda."""
@@ -18,7 +18,6 @@ def _plot_daily(df_gen, df_dem, fecha, ax, colores):
     if df_dem is not None and not df_dem.empty:
         df_dem['hora'] = df_dem['fecha_hora'].dt.hour
         demanda_horaria = df_dem.groupby('hora')['demanda_mw'].sum()
-        # PASO CLAVE: Reindexar la demanda para que coincida con el índice de las barras.
         demanda_alineada = demanda_horaria.reindex(df_pivot.index).fillna(0)
         ax.plot(range(len(demanda_alineada)), demanda_alineada.values, color='darkred', linestyle='--', marker='o', label='Demanda')
 
@@ -39,7 +38,6 @@ def _plot_monthly_summary(df_gen, df_dem, fecha, ax, colores):
     if df_dem is not None and not df_dem.empty:
         df_dem['dia'] = df_dem['fecha_hora'].dt.day
         demanda_diaria = df_dem.groupby('dia')['demanda_mw'].sum() / 1000 # GWh
-        # PASO CLAVE: Reindexar la demanda para que coincida con el índice de las barras.
         demanda_alineada = demanda_diaria.reindex(df_pivot.index).fillna(0)
         ax.plot(range(len(demanda_alineada)), demanda_alineada.values, color='darkred', linestyle='--', marker='o', label='Demanda')
 
@@ -61,7 +59,6 @@ def _plot_yearly_summary(df_gen, df_dem, fecha, ax, colores):
     if df_dem is not None and not df_dem.empty:
         df_dem['mes'] = df_dem['fecha_hora'].dt.month
         demanda_mensual = df_dem.groupby('mes')['demanda_mw'].sum() / 1000 # GWh
-        # PASO CLAVE: Reindexar la demanda para que coincida con el índice de las barras.
         demanda_alineada = demanda_mensual.reindex(df_pivot.index).fillna(0)
         ax.plot(range(len(demanda_alineada)), demanda_alineada.values, color='darkred', linestyle='--', marker='o', label='Demanda')
     
@@ -84,7 +81,6 @@ def _plot_yearly_range_summary(df_gen, df_dem, fecha, ax, colores):
     if df_dem is not None and not df_dem.empty:
         df_dem['anio'] = df_dem['fecha_hora'].dt.year
         demanda_anual = df_dem.groupby('anio')['demanda_mw'].sum() / 1000000 # TWh
-        # PASO CLAVE: Reindexar la demanda para que coincida con el índice de las barras.
         demanda_alineada = demanda_anual.reindex(df_pivot.index).fillna(0)
         ax.plot(range(len(demanda_alineada)), demanda_alineada.values, color='darkred', linestyle='--', marker='o', label='Demanda')
 
@@ -93,12 +89,13 @@ def _plot_yearly_range_summary(df_gen, df_dem, fecha, ax, colores):
     ax.set_ylabel('Energía Total (TWh)', fontsize=12)
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, p: f'{x:,.2f}'))
 
-# --- Función Principal (SIN CAMBIOS) ---
+# --- Función Principal (Modificada) ---
 
-def generar_grafico_generacion(periodo, ruta_gen_csv, ruta_dem_csv, carpeta_salida):
+def generar_grafico_generacion(periodo, ruta_gen_csv, ruta_dem_csv, carpeta_salida, escenario):
     try:
         df_gen = pd.read_csv(ruta_gen_csv, sep=';', parse_dates=['fecha_hora'])
-        df_gen['tipo_generador'] = df_gen['generador'].apply(lambda x: x.split('-')[0])
+        # La siguiente línea asume que el tipo de generador se puede extraer del nombre. Ej: 'TERMICA-01' -> 'TERMICA'
+        df_gen['tipo_generador'] = df_gen['generador'].apply(lambda x: x.split('-')[0].upper())
     except FileNotFoundError:
         print(f"Error: No se encontró el archivo de generación en: {ruta_gen_csv}")
         return
@@ -139,7 +136,9 @@ def generar_grafico_generacion(periodo, ruta_gen_csv, ruta_dem_csv, carpeta_sali
         print(f"No se encontraron datos de generación para el período: {periodo}"); return
 
     colores = {'SOLAR': 'gold', 'TERMICA': 'darkorange', 'HIDRO': 'royalblue', 'DIESEL': 'gray'}
+    # --- CAMBIO 1: Añadir título principal con el nombre del escenario ---
     fig, ax = plt.subplots(figsize=(16, 8))
+    fig.suptitle(f'Escenario Hidrológico: {escenario.upper()}', fontsize=20, fontweight='bold')
     
     plot_func(df_periodo_gen, df_periodo_dem, periodo, ax, colores)
     
@@ -162,26 +161,34 @@ def generar_grafico_generacion(periodo, ruta_gen_csv, ruta_dem_csv, carpeta_sali
     else:
         ax.legend(list(reversed(handles)), list(reversed(labels)), title='Tipo de Central', bbox_to_anchor=(1.02, 1), loc='upper left')
 
-    plt.tight_layout(rect=[0, 0, 0.9, 1])
+    # Ajustar layout para el supertítulo y la leyenda
+    fig.tight_layout(rect=[0, 0, 0.9, 0.96])
 
     if not os.path.exists(carpeta_salida):
         os.makedirs(carpeta_salida)
         
     ruta_guardado = os.path.join(carpeta_salida, f'grafico_gen_dem_{periodo}.png')
-    # plt.savefig(ruta_guardado, dpi=300)
+    plt.savefig(ruta_guardado, dpi=300)
     print(f"Gráfico guardado exitosamente en: {ruta_guardado}")
     plt.show()
 
-# --- CONFIGURACIÓN Y EJECUCIÓN (SIN CAMBIOS) ---
+# --- CONFIGURACIÓN Y EJECUCIÓN ---
 if __name__ == "__main__":
-    # --- ¡Elige el período que quieres analizar! ---
-    PERIODO_SELECCIONADO = "2025-01-01"  # Vista detallada de un día
-    # PERIODO_SELECCIONADO = "2025-06"       # Resumen de un mes
-    # PERIODO_SELECCIONADO = "2025"         # Resumen de un año
-    # PERIODO_SELECCIONADO = "2025-2035"     # Resumen de un rango de años
-    
-    RUTA_GENERACION_CSV = os.path.join("resultados_simulacion", "resultados_generacion.csv")
-    RUTA_DEMANDA_CSV = os.path.join("resultados_simulacion", "resultados_demanda.csv")
-    CARPETA_GRAFICOS = os.path.join("resultados_simulacion", "graficos")
+    # --- ¡Elige el escenario y período que quieres analizar! ---
+    # --- CAMBIO 2: Seleccionar el escenario a graficar ---
+    ESCENARIO = "SECA"  # Puedes cambiarlo a "MEDIA" o "HUMEDA"
 
-    generar_grafico_generacion(PERIODO_SELECCIONADO, RUTA_GENERACION_CSV, RUTA_DEMANDA_CSV, CARPETA_GRAFICOS)
+    # Descomenta la línea que quieras usar y comenta las otras.
+    PERIODO_SELECCIONADO = "2025-07-22"   # Vista detallada de un día de invierno
+    # PERIODO_SELECCIONADO = "2025-01"     # Resumen de un mes de verano
+    # PERIODO_SELECCIONADO = "2025"        # Resumen de un año
+    # PERIODO_SELECCIONADO = "2025-2034"   # Resumen de un rango de años
+    
+    # --- CAMBIO 3: Rutas dinámicas basadas en el escenario ---
+    CARPETA_BASE = f"resultados_simulacion_{ESCENARIO}"
+    RUTA_GENERACION_CSV = os.path.join(CARPETA_BASE, "resultados_generacion.csv")
+    RUTA_DEMANDA_CSV = os.path.join(CARPETA_BASE, "resultados_demanda.csv")
+    CARPETA_GRAFICOS = os.path.join(CARPETA_BASE, "graficos")
+
+    # Pasamos el escenario a la función para usarlo en el título
+    generar_grafico_generacion(PERIODO_SELECCIONADO, RUTA_GENERACION_CSV, RUTA_DEMANDA_CSV, CARPETA_GRAFICOS, ESCENARIO)
