@@ -2,6 +2,60 @@ import json
 import pandas as pd
 from pathlib import Path
 
+def calcular_valor_agua(
+    agua_por_central_mes,
+    capacidad_maxima,
+    p_termica,
+    p_diesel,
+    factor_min=0.2,
+    factor_max=1.5,
+    precio_minimo=5,
+    precio_maximo=150
+):
+    """
+    Calcula el valor agua (precio sombra) por central y mes.
+
+    Args:
+        agua_por_central_mes (dict): {(central, mes): volumen disponible MWh}.
+        capacidad_maxima (dict): {central: capacidad máxima MWh}.
+        p_termica (float): costo térmica referencia (USD/MWh).
+        p_diesel (float): costo diésel referencia (USD/MWh).
+        factor_min (float): factor mínimo aplicado a p_ref.
+        factor_max (float): factor máximo aplicado a p_ref.
+        precio_minimo (float): piso absoluto del precio sombra.
+        precio_maximo (float): techo absoluto del precio sombra.
+
+    Returns:
+        dict: {(central, mes): valor agua USD/MWh}.
+    """
+    resultado = {}
+
+    # Precio de referencia
+    p_ref = (p_termica + p_diesel) / 2
+
+    for (central, mes), agua_hoy in agua_por_central_mes.items():
+        cap_max = capacidad_maxima.get(central, None)
+        if cap_max is None or cap_max <= 0:
+            raise ValueError(f"Capacidad máxima no definida o inválida para {central}")
+
+        # Porcentaje de llenado
+        porcentaje = min(max(agua_hoy / cap_max, 0), 1)
+
+        # Factor inverso: más agua => menor factor
+        factor = factor_max - porcentaje * (factor_max - factor_min)
+
+        # Precio sombra antes de limitar
+        costo = p_ref * factor
+
+        # Limitar entre precio_minimo y precio_maximo
+        costo_final = min(max(costo, precio_minimo), precio_maximo)
+
+        resultado[(central, mes)] = costo_final
+
+    return resultado
+
+
+
 class ProjectDataAPI:
     """
     Una API para cargar y acceder a todos los datos del proyecto de mercados eléctricos.

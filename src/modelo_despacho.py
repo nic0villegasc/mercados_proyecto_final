@@ -130,64 +130,84 @@ class ModelData:
                 print(f"Advertencia: No se encontró costo para {g} en la hora {t} (Año {año_relativo}, Mes {mes})")
                 
       # --- Parámetro: Valor del Agua (Costo de Oportunidad) ---
+      # --- Lógica Mensual con Duplicación Diaria ---
       self.ValorAgua = {}
-      self.NivelEmbalseMensual = {} # Para guardar los resultados de la simulación
+      self.NivelEmbalseMensual = {} # ### MODIFICADO ### Ahora guardará el nivel al inicio de cada mes.
 
       centrales_df = self.api.get_centrales_info()
-      costos_termicos_df = pd.DataFrame(
-          [(g, t, c) for (g, t), c in self.CostoVar.items()],
-          columns=['generador', 'hora', 'costo']
-      )
+      # Crear diccionario rápido con listas de costos por hora (sin cambios)
+      costos_por_hora = {}
+      for (g, t), costo in self.CostoVar.items():
+          if t not in costos_por_hora:
+              costos_por_hora[t] = []
+          costos_por_hora[t].append(costo)
 
       for g in self.G_hidro:
-          # 1. Obtener datos específicos de la central hidroeléctrica
           info_hidro = centrales_df[centrales_df['id_central'] == g].iloc[0]
           cota_inicial = info_hidro['cota_inicial_mwh']
           cota_maxima = info_hidro['cota_maxima_mwh']
-          
-          # Usaremos hidrología 'media' como base para el cálculo del valor del agua
-          # Puedes cambiar 'media' a 'seca_p10' o 'humeda_p90' para otros escenarios
+
+          # Afluentes mensuales (sin cambios)
           caudal_df = self.api.get_caudal(g, hidrologia='media')
           caudal_map = caudal_df.set_index(['Año', 'Mes'])['Caudal_MWh'].to_dict()
 
           nivel_actual_mwh = cota_inicial
 
-          # 2. Simular mes a mes para calcular el costo de oportunidad
           for m in self.M:
-            horas_del_mes = self.T_m[m]
-            timestamp_mes = self.hourly_mapping_num_to_ts[horas_del_mes[0]]
-            año_relativo = timestamp_mes.year - 2025 + 1
-            mes_calendario = timestamp_mes.month
-            
-            # 3. Calcular el porcentaje de llenado del embalse
-            caudal_afluente = caudal_map.get((año_relativo, mes_calendario), 0)
-            agua_disponible = nivel_actual_mwh + caudal_afluente
-            porcentaje_llenado = min(agua_disponible / cota_maxima, 1.0) # Cap at 100%
+              horas_del_mes = self.T_m[m]
+              if not horas_del_mes: # Si el mes no tiene horas, continuar
+                  continue
 
-            # 4. Encontrar costos térmicos de referencia para este mes
-            costos_del_mes = costos_termicos_df[costos_termicos_df['hora'].isin(horas_del_mes)]
-            costo_termico_min = costos_del_mes['costo'].min()
-            costo_termico_max = costos_del_mes['costo'].max()
+              timestamp_mes = self.hourly_mapping_num_to_ts[horas_del_mes[0]]
+              año_relativo = timestamp_mes.year - 2025 + 1
+              mes_calendario = timestamp_mes.month
+
+              # ### NUEVO ### 1. Usar el nivel del embalse al INICIO del mes para el cálculo.
+              # El afluente de este mes se sumará al final.
+              self.NivelEmbalseMensual[(g, m)] = nivel_actual_mwh
+              porcentaje_llenado_mes = min(nivel_actual_mwh / cota_maxima, 1.0)
+              
+              # ### NUEVO ### 2. Calcular una plantilla de 24 horas para el valor del agua.
+              # Se usa el perfil de costos del primer día del mes como representativo.
+              valores_agua_plantilla_24h = {}
+              horas_representativas = horas_del_mes[:24] # Tomamos las primeras 24 horas
+
+              for hora_del_dia, t_representativo in enumerate(horas_representativas):
+                  costos_lista = costos_por_hora.get(t_representativo, [])
+                  if costos_lista:
+                      costo_termico_min = min(costos_lista)
+                      costo_termico_max = max(costos_lista)
+                  else:
+                      costo_termico_min = 80
+                      costo_termico_max = 120
+                  
+                  # La heurística usa el MISMO porcentaje de llenado mensual para las 24 horas
+                  costo_oportunidad_bajo = 0.20 * costo_termico_min
+                  costo_oportunidad_alto = 1.20 * costo_termico_max
+
+                  valor_agua_hora = costo_oportunidad_alto - (
+                      porcentaje_llenado_mes * (costo_oportunidad_alto - costo_oportunidad_bajo)
+                  )
+                  valor_agua_hora = min(max(valor_agua_hora, 5), 150)
+                  
+                  # Guardamos el valor en la plantilla (índice 0-23)
+                  valores_agua_plantilla_24h[hora_del_dia] = valor_agua_hora
+
+              # ### NUEVO ### 3. Asignar los valores de la plantilla a TODAS las horas del mes.
+              for t in horas_del_mes:
+                  # Obtenemos la hora del día (0-23) para la hora 't'
+                  hora_del_dia = self.hourly_mapping_num_to_ts[t].hour
+                  # Asignamos el valor desde nuestra plantilla
+                  self.ValorAgua[(g, t)] = valores_agua_plantilla_24h[hora_del_dia]
+
+              # ### NUEVO ### 4. Actualizar el nivel del embalse para el inicio del PRÓXIMO mes.
+              caudal_afluente_total = caudal_map.get((año_relativo, mes_calendario), 0)
+              nivel_actual_mwh += caudal_afluente_total
+              # Asegurarse de que el embalse no se rebalse en la simulación
+              nivel_actual_mwh = min(nivel_actual_mwh, cota_maxima)
             
-            # 5. Aplicar la heurística de interpolación lineal
-            costo_oportunidad_bajo = 0.20 * costo_termico_min
-            costo_oportunidad_alto = 1.20 * costo_termico_max
-            
-            # Interpolación lineal invertida: más lleno = más barato
-            valor_agua_mes = costo_oportunidad_alto - (porcentaje_llenado * (costo_oportunidad_alto - costo_oportunidad_bajo))
-            
-            # 6. Asignar el valor a todas las horas del mes
-            for t in horas_del_mes:
-                self.ValorAgua[(g, t)] = valor_agua_mes
-            
-            # 7. Actualizar el nivel del embalse para el siguiente mes
-            # Asumimos que se usa el caudal afluente (operación a filo de agua) para mantener el nivel
-            # El nivel solo cambia por la diferencia entre la cota y el agua usada.
-            agua_turbinada = caudal_afluente
-            nivel_actual_mwh = min(nivel_actual_mwh + caudal_afluente - agua_turbinada, cota_maxima)
-            
-            # Guardamos el resultado para análisis posterior
-            self.NivelEmbalseMensual[(g, m)] = nivel_actual_mwh
+      # Guardamos el resultado para análisis posterior
+      self.NivelEmbalseMensual[(g, m)] = nivel_actual_mwh
           
       print(f"Parámetro 'ValorAgua' creado con {len(self.ValorAgua)} entradas.")
       
