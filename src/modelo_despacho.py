@@ -383,6 +383,16 @@ class OptimizationModel:
         # El dominio es 'Reals' porque el flujo puede ser positivo o negativo,
         # indicando la dirección del flujo.
         self.model.f = pyo.Var(self.data.L, self.data.T, domain=pyo.Reals)
+        
+        # --- v(g, t): Volumen de agua en el embalse g al final de la hora t [MWh] ---
+        # Se define solo para las centrales hidroeléctricas.
+        # El dominio es NonNegativeReals, ya que el volumen no puede ser negativo.
+        self.model.v = pyo.Var(self.data.G_hidro, self.data.T, domain=pyo.NonNegativeReals)
+        
+        # --- s(g, t): Agua vertida (derramada) desde el embalse g en la hora t [MWh] ---
+        # Se define para las centrales hidroeléctricas. Permite al modelo "desechar"
+        # agua si es necesario (ej. por exceso de afluentes).
+        self.model.s = pyo.Var(self.data.G_hidro, self.data.T, domain=pyo.NonNegativeReals)
 
     def _build_objective(self):
         """
