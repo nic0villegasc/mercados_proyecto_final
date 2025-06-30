@@ -285,37 +285,42 @@ class ModelData:
       # --- Parámetro: Potencia Solar Disponible ---
       self.PdispSolar = {}
 
+      # -------------------- PERFIL SOLAR CORREGIDO ------------------------
+      # --------------------- PERFIL SOLAR (shift –1 h) ----------------------
+      DAYS_IN_MONTH = {1:31, 2:28, 3:31, 4:30, 5:31, 6:30,
+                        7:31, 8:31, 9:30, 10:31, 11:30, 12:31}
+
       for g in self.G_solar:
-          try:
-              # 1. Obtenemos el DataFrame del perfil de generación para el generador solar 'g'
-              solar_df = self.api.get_time_series_data(g, 'generacion_fija')
-              
-              # 2. Creamos un mapeo eficiente de (Año, Mes, Hora) -> Generacion_MW
-              # Esto es mucho más rápido que buscar en el DataFrame miles de veces.
-              solar_map = solar_df.set_index(['Año', 'Mes', 'Hora'])['Generacion_MW'].to_dict()
+        try:
+            solar_df = self.api.get_time_series_data(g, 'generacion_fija')
+            solar_map = solar_df.set_index(['Año', 'Mes', 'Hora'])['Generacion_MW'].to_dict()
 
-              # 3. Iteramos sobre TODAS las horas 't' del horizonte de simulación
-              for t in self.T:
-                  # Obtenemos el timestamp (fecha y hora exactas) para la hora numérica 't'
-                  timestamp = self.hourly_mapping_num_to_ts[t]
-                  
-                  # Calculamos el año relativo, mes y hora para ese timestamp
-                  año_relativo = timestamp.year - 2025 + 1
-                  mes = timestamp.month
-                  hora_del_dia = timestamp.hour # La hora de 0 a 23
-                  
-                  # Buscamos la generación solar en nuestro mapeo
-                  generacion_hora = solar_map.get((año_relativo, mes, hora_del_dia))
-                  
-                  if generacion_hora is not None:
-                      # Creamos la entrada en el diccionario para Pyomo: (generador, hora) -> generacion
-                      self.PdispSolar[(g, t)] = generacion_hora
-                  else:
-                      # Si no se encuentra, asumimos 0 (por ejemplo, para datos faltantes)
-                      self.PdispSolar[(g, t)] = 0
+            print(f"\n── Debug solar {g} (primer día) ──")
+            for t in self.T:
+                ts   = self.hourly_mapping_num_to_ts[t]
+                if t > 24: break                        # solo 1º día
 
-          except (ValueError, KeyError) as e:
-              print(f"Advertencia al buscar 'generacion_fija' para {g}: {e}")
+                año_rel = ts.year - 2025 + 1
+                mes     = ts.month
+                hora_busqueda = (ts.hour - 1) % 24      # shift –1 h
+                h_code1 = hora_busqueda                 # 0-23
+                h_code2 = h_code1 * 100                 # 0, 100, …2300
+
+                # Busca en ambos formatos
+                gen_mes = (solar_map.get((año_rel, mes, h_code2))
+                        if (año_rel, mes, h_code2) in solar_map
+                        else solar_map.get((año_rel, mes, h_code1), 0))
+
+                gen_hora = gen_mes / DAYS_IN_MONTH[mes]
+                self.PdispSolar[(g, t)] = gen_hora
+
+                print(f"Hora real {ts.hour:02d}: "
+                    f"busca {hora_busqueda:02d}/{hora_busqueda*100:04d}  "
+                    f"gen_mes={gen_mes:.4f}  ⇒ gen_hora={gen_hora:.4f}")
+
+        except Exception as e:
+            print(f"Error cargando perfil solar {g}: {e}")
+# ---------------------------------------------------------------------
 
       print(f"Parámetro 'PdispSolar' creado con {len(self.PdispSolar)} entradas.")
 
@@ -477,7 +482,15 @@ class OptimizationModel:
             return energia_generada_mes <= presupuesto_energia
         self.model.monthly_energy_budget_constr = pyo.Constraint(generadores_gestionables, self.data.M, rule=monthly_energy_budget_rule)
         print("OK: Restricción 'Presupuesto Mensual de Energía' construida.")
-    
+
+
+        def solar_cap_limit_rule(model, t):
+            return sum(model.p[g, t] for g in self.data.G_solar) <= 50
+        self.model.solar_cap_limit = pyo.Constraint(self.data.T,
+                                                    rule=solar_cap_limit_rule)
+        print("OK: Restricción 'Solar inyectada ≤ 50 MW' construida.")
+
+
     def solve(self, solver_name='cplex'):
         """
         Resuelve el modelo utilizando el solver especificado.
@@ -808,8 +821,25 @@ if __name__ == '__main__':
   # Asegúrate de tener CPLEX instalado y accesible en el PATH de tu sistema.
   opt_model.solve(solver_name='cplex')
 
+
+  # ---------- AVISO DE HORAS CON SOLAR CLIPPEADA ----------
+exceso = []
+for t in model_data.T:
+    solar_inyectada = sum(pyo.value(opt_model.model.p[g, t])
+                          for g in model_data.G_solar)
+    if solar_inyectada > 49.999:          # vínculo activo
+        ts = model_data.hourly_mapping_num_to_ts[t]
+        exceso.append((t, ts, solar_inyectada))
+
+if exceso:
+    print(f"\n⚠️  Horas con solar topada a 50 MW: {len(exceso)}")
+    for t, ts, val in exceso[:10]:        # primeras 10 por brevedad
+        print(f"  Hora {t:>5}  {ts}  Inyectada = {val:.1f} MW")
+else:
+    print("\n✅  Ninguna hora llegó al límite de 50 MW.")
+
   # 5. Validar los resultados (si la solución fue óptima)
-  if opt_model.results.solver.termination_condition == pyo.TerminationCondition.optimal:
+if opt_model.results.solver.termination_condition == pyo.TerminationCondition.optimal:
     # 1. Obtener el costo total
     costo_total = pyo.value(opt_model.model.objective)
     print(f"\n--- RESULTADOS DE LA OPTIMIZACIÓN ---")
