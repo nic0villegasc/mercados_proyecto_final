@@ -462,7 +462,29 @@ class OptimizationModel:
                                                     rule=solar_cap_limit_rule)
         print("OK: Restricción 'Solar inyectada ≤ 50 MW' construida.")
         
-        
+        # --- 7. Balance Hídrico para Embalses Hidroeléctricos ---
+        def water_balance_rule(model, g, t):
+            # Condición para la primera hora de la simulación (t=1)
+            # El volumen inicial es la Cota Inicial del embalse.
+            # Nota: self.data.T[0] es la primera hora, que en este modelo es 1.
+            if t == self.data.T[0]:
+                return model.v[g, t] == (self.data.CotaInicial[g] 
+                                         + self.data.Afluente.get((g, t), 0)
+                                         - model.p[g, t] 
+                                         - model.s[g, t])
+            
+            # Condición para todas las demás horas (t > 1)
+            # El volumen inicial es el volumen final de la hora anterior.
+            else:
+                return model.v[g, t] == (model.v[g, t-1] 
+                                         + self.data.Afluente.get((g, t), 0)
+                                         - model.p[g, t] 
+                                         - model.s[g, t])
+
+        self.model.water_balance_constr = pyo.Constraint(self.data.G_hidro, 
+                                                         self.data.T, 
+                                                         rule=water_balance_rule)
+        print("OK: Restricción 'Balance Hídrico' construida.")
 
 
     def solve(self, solver_name='cplex'):
