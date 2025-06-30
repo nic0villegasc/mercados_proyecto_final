@@ -178,6 +178,52 @@ class ProjectDataAPI:
         if data_key not in self.time_series[central_id]:
              raise ValueError(f"La central '{central_id}' no tiene datos de tipo '{data_key}'.")
         return self.time_series[central_id][data_key]
+    
+    def get_solar_generacion_fija(self, central_id: str) -> pd.DataFrame:
+        """
+        Obtiene la generación fija de una central solar y la transforma de energía 
+        mensual por bloque a una serie de tiempo con la potencia horaria promedio.
+        
+        Args:
+            central_id (str): El ID de la central solar.
+            
+        Returns:
+            pd.DataFrame: DataFrame con columnas 'Timestamp' y 'Generacion_MW' para 10 años.
+        """
+        # 1. Obtener los datos crudos usando la función base segura.
+        # Se asume que la data key para perfiles solares es 'generacion_fija'.
+        df_raw = self.get_time_series_data(central_id, 'generacion_fija').copy()
+        
+        # 2. Renombrar la columna de valor para claridad semántica en el cálculo.
+        # La función _load_centrales_timeseries_data ya limpió la columna.
+        df_raw.rename(columns={'Generacion_MW': 'Energia_Mensual_Bloque_MWh'}, inplace=True)
+        
+        # 3. Construir el "scaffold" de tiempo, similar a como se hizo con la demanda.
+        # No se necesita la columna 'Barra' para la generación de una central.
+        BASE_YEAR = 2025
+        start_date = pd.to_datetime(f'{BASE_YEAR}-01-01')
+        end_date = pd.to_datetime(f'{BASE_YEAR+9}-12-31 23:00:00')
+        scaffold = pd.DataFrame(pd.date_range(start=start_date, end=end_date, freq='h'), columns=['Timestamp'])
+        
+        scaffold['Año'] = scaffold['Timestamp'].dt.year - BASE_YEAR + 1
+        scaffold['Mes'] = scaffold['Timestamp'].dt.month
+        scaffold['Hora'] = scaffold['Timestamp'].dt.hour + 1
+        scaffold['dias_en_mes'] = scaffold['Timestamp'].dt.days_in_month
+        
+        # 4. Unir el scaffold con los datos de generación para expandirlos.
+        df_completo = pd.merge(scaffold, df_raw, on=['Año', 'Mes', 'Hora'], how='left')
+        
+        # 5. Calcular la potencia horaria promedio.
+        # Lógica: (Energía del bloque en el mes [MWh]) / (días en el mes) = Energía diaria promedio para ese bloque [MWh/día]
+        # Como el bloque es de 1 hora, esto es numéricamente igual a la Potencia Promedio [MW] durante esa hora.
+        df_completo['Generacion_MW'] = df_completo['Energia_Mensual_Bloque_MWh'] / df_completo['dias_en_mes']
+        
+        # 6. Rellenar los valores nulos que se crean al expandir la serie de tiempo.
+        # ffill() rellena hacia adelante, bfill() rellena hacia atrás por si hay NaNs al inicio.
+        df_completo['Generacion_MW'] = df_completo['Generacion_MW'].ffill().bfill()
+        
+        # 7. Devolver el resultado final y limpio.
+        return df_completo[['Timestamp', 'Generacion_MW']]
 
     def get_caudal(self, central_id: str, hidrologia: str = 'media') -> pd.DataFrame:
         """

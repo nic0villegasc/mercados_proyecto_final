@@ -175,9 +175,9 @@ def generar_grafico_generacion(periodo, ruta_gen_csv, ruta_dem_csv, carpeta_sali
 # --- CONFIGURACIÓN Y EJECUCIÓN (SIN CAMBIOS) ---
 if __name__ == "__main__":
     # --- ¡Elige el período que quieres analizar! ---
-    PERIODO_SELECCIONADO = "2025-01-01"  # Vista detallada de un día
-    # PERIODO_SELECCIONADO = "2025-01"       # Resumen de un mes
-    # PERIODO_SELECCIONADO = "2033"         # Resumen de un año
+    PERIODO_SELECCIONADO = "2025-06-01"  # Vista detallada de un día
+    # PERIODO_SELECCIONADO = "2025-06"       # Resumen de un mes
+    # PERIODO_SELECCIONADO = "2025"         # Resumen de un año
     # PERIODO_SELECCIONADO = "2025-2035"     # Resumen de un rango de años
     
     RUTA_GENERACION_CSV = os.path.join("resultados_simulacion", "resultados_generacion.csv")

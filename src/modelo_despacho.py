@@ -21,8 +21,7 @@ class ModelData:
         self._create_all_sets()
         print("Paso 1 completado: Todos los conjuntos e índices han sido creados usando la API.")
         self._create_parameters()
-        
-
+       
     def _create_all_sets(self):
         """Método principal para orquestar la creación de todos los conjuntos."""
         centrales_df = self.api.get_centrales_info()
@@ -285,42 +284,32 @@ class ModelData:
       # --- Parámetro: Potencia Solar Disponible ---
       self.PdispSolar = {}
 
-      # -------------------- PERFIL SOLAR CORREGIDO ------------------------
-      # --------------------- PERFIL SOLAR (shift –1 h) ----------------------
-      DAYS_IN_MONTH = {1:31, 2:28, 3:31, 4:30, 5:31, 6:30,
-                        7:31, 8:31, 9:30, 10:31, 11:30, 12:31}
-
       for g in self.G_solar:
-        try:
-            solar_df = self.api.get_time_series_data(g, 'generacion_fija')
-            solar_map = solar_df.set_index(['Año', 'Mes', 'Hora'])['Generacion_MW'].to_dict()
+          try:
+              # 1. Obtenemos el DataFrame con la serie de tiempo horaria ya procesada.
+              #    Columnas: ['Timestamp', 'Generacion_MW']
+              solar_df = self.api.get_solar_generacion_fija(g)
 
-            print(f"\n── Debug solar {g} (primer día) ──")
-            for t in self.T:
-                ts   = self.hourly_mapping_num_to_ts[t]
-                if t > 24: break                        # solo 1º día
+              # 2. Creamos un mapeo eficiente usando el Timestamp como índice.
+              #    Esto convierte el DataFrame en una Serie de pandas donde el índice es la fecha
+              #    y el valor es la generación. Es la forma más rápida de buscar por fecha.
+              generation_series = solar_df.set_index('Timestamp')['Generacion_MW']
 
-                año_rel = ts.year - 2025 + 1
-                mes     = ts.month
-                hora_busqueda = (ts.hour - 1) % 24      # shift –1 h
-                h_code1 = hora_busqueda                 # 0-23
-                h_code2 = h_code1 * 100                 # 0, 100, …2300
+              # 3. Iteramos sobre TODAS las horas 't' del horizonte de simulación.
+              for t in self.T:
+                  # Obtenemos el objeto Timestamp correspondiente a la hora 't'.
+                  timestamp = self.hourly_mapping_num_to_ts[t]
 
-                # Busca en ambos formatos
-                gen_mes = (solar_map.get((año_rel, mes, h_code2))
-                        if (año_rel, mes, h_code2) in solar_map
-                        else solar_map.get((año_rel, mes, h_code1), 0))
+                  # 4. Buscamos la generación directamente con el Timestamp en la Serie.
+                  #    Usamos .get() con un valor por defecto de 0 para manejar de forma segura
+                  #    cualquier posible fecha que no se encuentre.
+                  generacion_hora = generation_series.get(timestamp, default=0)
 
-                gen_hora = gen_mes / DAYS_IN_MONTH[mes]
-                self.PdispSolar[(g, t)] = gen_hora
+                  # 5. Creamos la entrada en el diccionario para Pyomo: (generador, hora) -> generacion
+                  self.PdispSolar[(g, t)] = generacion_hora
 
-                print(f"Hora real {ts.hour:02d}: "
-                    f"busca {hora_busqueda:02d}/{hora_busqueda*100:04d}  "
-                    f"gen_mes={gen_mes:.4f}  ⇒ gen_hora={gen_hora:.4f}")
-
-        except Exception as e:
-            print(f"Error cargando perfil solar {g}: {e}")
-# ---------------------------------------------------------------------
+          except (ValueError, KeyError) as e:
+              print(f"Advertencia al procesar la generación para {g}: {e}")
 
       print(f"Parámetro 'PdispSolar' creado con {len(self.PdispSolar)} entradas.")
 
@@ -961,47 +950,31 @@ if __name__ == '__main__':
   opt_model.solve_and_get_duals(solver_name='cplex')
 
 
-  # ---------- AVISO DE HORAS CON SOLAR CLIPPEADA ----------
-exceso = []
-for t in model_data.T:
-    solar_inyectada = sum(pyo.value(opt_model.model.p[g, t])
-                          for g in model_data.G_solar)
-    if solar_inyectada > 49.999:          # vínculo activo
-        ts = model_data.hourly_mapping_num_to_ts[t]
-        exceso.append((t, ts, solar_inyectada))
-
-if exceso:
-    print(f"\n⚠️  Horas con solar topada a 50 MW: {len(exceso)}")
-    for t, ts, val in exceso[:10]:        # primeras 10 por brevedad
-        print(f"  Hora {t:>5}  {ts}  Inyectada = {val:.1f} MW")
-else:
-    print("\n✅  Ninguna hora llegó al límite de 50 MW.")
-
   # 5. Validar los resultados (si la solución fue óptima)
-if opt_model.results.solver.termination_condition == pyo.TerminationCondition.optimal:
-    # 1. Obtener el costo total
-    costo_total = pyo.value(opt_model.model.objective)
-    print(f"\n--- RESULTADOS DE LA OPTIMIZACIÓN ---")
-    print(f"Costo Total de Operación para 1 Mes: ${costo_total:,.2f}")
-    
-    # 2. Obtener los resultados en formato de tablas (DataFrames)
-    resultados_tablas = opt_model.get_results_as_dataframes()
-    
-    if resultados_tablas:
-        # 3. Mostrar un resumen de cada tabla de resultados
-        print("\n--- Resumen de Compromiso de Unidades (Térmicas) ---")
-        print(resultados_tablas['compromiso_unidad'])
-        
-        print("\n--- Resumen de Generación Horaria (primeras 5 filas con generación) ---")
-        print(resultados_tablas['generacion'])
-        
-        print("\n--- Resumen de Flujo en Líneas (primeras 5 filas con flujo) ---")
-        print(resultados_tablas['flujo'].head())
+  if opt_model.results.solver.termination_condition == pyo.TerminationCondition.optimal:
+      # 1. Obtener el costo total
+      costo_total = pyo.value(opt_model.model.objective)
+      print(f"\n--- RESULTADOS DE LA OPTIMIZACIÓN ---")
+      print(f"Costo Total de Operación para 1 Mes: ${costo_total:,.2f}")
+      
+      # 2. Obtener los resultados en formato de tablas (DataFrames)
+      resultados_tablas = opt_model.get_results_as_dataframes()
+      
+      if resultados_tablas:
+          # 3. Mostrar un resumen de cada tabla de resultados
+          print("\n--- Resumen de Compromiso de Unidades (Térmicas) ---")
+          print(resultados_tablas['compromiso_unidad'])
+          
+          print("\n--- Resumen de Generación Horaria (primeras 5 filas con generación) ---")
+          print(resultados_tablas['generacion'])
+          
+          print("\n--- Resumen de Flujo en Líneas (primeras 5 filas con flujo) ---")
+          print(resultados_tablas['flujo'].head())
 
-        if not resultados_tablas['vertimiento'].empty:
-            print("\n--- Resumen de Vertimiento Solar (primeras 5 filas con vertimiento) ---")
-            print(resultados_tablas['vertimiento'].head())
-        else:
-            print("\nNo hubo vertimiento solar en la solución.")
+          if not resultados_tablas['vertimiento'].empty:
+              print("\n--- Resumen de Vertimiento Solar (primeras 5 filas con vertimiento) ---")
+              print(resultados_tablas['vertimiento'].head())
+          else:
+              print("\nNo hubo vertimiento solar en la solución.")
 
-    opt_model.save_results_to_csv(output_folder="resultados_simulacion")
+      opt_model.save_results_to_csv(output_folder="resultados_simulacion")
